@@ -332,6 +332,104 @@ _agent_skills_dir() {
   esac
 }
 
+# Return the path to the global instructions file for a given agent binary.
+# Each agent has a single file that is injected into every session globally.
+# Prints the path and returns 0 if the agent is supported; returns 1 otherwise.
+#
+# Agent → file mapping (researched 2026-03-04):
+#   opencode  ~/.config/opencode/AGENTS.md   (OpenCode docs)
+#   claude    ~/.claude/CLAUDE.md             (Claude Code / OpenCode compat docs)
+#   codex     ~/.codex/AGENTS.md              (Codex CLI README §Memory & project docs)
+#   amp       ~/.config/amp/AGENTS.md         (Amp manual §AGENTS.md — more specific
+#                                              than ~/.config/AGENTS.md which other
+#                                              tools may also read)
+#   aider     (none — no global instructions concept)
+#   goose     (none — no global instructions concept)
+#   gemini    (none — no global instructions concept)
+_agent_instructions_file() {
+  case "$1" in
+    opencode) echo "${HOME}/.config/opencode/AGENTS.md" ; return 0 ;;
+    claude)   echo "${HOME}/.claude/CLAUDE.md"           ; return 0 ;;
+    codex)    echo "${HOME}/.codex/AGENTS.md"            ; return 0 ;;
+    amp)      echo "${HOME}/.config/amp/AGENTS.md"       ; return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+# Rules are named lines in the agent's global instructions file.
+# Each rule is identified by a stable marker substring so it can be detected,
+# added, or updated without duplicating. As zproj grows, add new rules here.
+#
+# Format: _rule_text <name>  — prints the full rule line to stdout.
+# Format: _rule_marker <name> — prints the stable detection substring.
+#
+# Adding a new rule: add a case entry to both functions, then call
+# _integrate_ensure_rule in _integrate_install_instructions.
+_rule_text() {
+  case "$1" in
+    ck-search)
+      echo "Never use \`grep\`, \`rg\`, or \`ripgrep\` to search any file in the repository. Never use \`awk\` or \`sed\` to search or extract content from files. Use the \`ck\` skill instead. \`awk\` and \`sed\` are permitted for text transformation and replacement only."
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_rule_marker() {
+  case "$1" in
+    ck-search) echo "Use the \`ck\` skill instead" ;;
+    *)         return 1 ;;
+  esac
+}
+
+# Ensure a named rule is present in a given file.
+# With dry_run=true: prints what would be done without touching the filesystem.
+# Creates the file (and parent directories) if absent.
+# Appends the rule if the file exists but the rule is missing.
+# Does nothing if the rule is already present.
+_integrate_ensure_rule() {
+  local rule_name="$1" instructions_file="$2" dry_run="${3:-false}"
+  local rule marker
+  rule="$(_rule_text "$rule_name")"   || { warn "Unknown rule: ${rule_name}"; return 1; }
+  marker="$(_rule_marker "$rule_name")" || return 1
+
+  if [[ -f "$instructions_file" ]] && grep -q "$marker" "$instructions_file"; then
+    dim "  [already present]  rule:${rule_name}  (${instructions_file})"
+    return 0
+  fi
+
+  if $dry_run; then
+    echo "  [would add]  rule:${rule_name}  (${instructions_file})"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$instructions_file")"
+  if [[ -f "$instructions_file" ]]; then
+    printf '\n%s\n' "$rule" >> "$instructions_file"
+    step "  [appended]   rule:${rule_name}  (${instructions_file})"
+  else
+    printf '%s\n' "$rule" > "$instructions_file"
+    step "  [created]    rule:${rule_name}  (${instructions_file})"
+  fi
+}
+
+# Install all zproj-managed rules into the agent's global instructions file.
+# With dry_run=true: prints what would be done without writing anything.
+_integrate_install_instructions() {
+  local dry_run="${1:-false}"
+  local ai ai_binary instructions_file
+
+  ai="$(_resolve_ai 2>/dev/null)" || ai=""
+  ai_binary="${ai%% *}"
+
+  if ! instructions_file="$(_agent_instructions_file "$ai_binary")"; then
+    warn "Agent '${ai_binary:-none}' has no known global instructions file. Supported: opencode, claude, codex, amp."
+    return 0
+  fi
+
+  # Add each named rule. Add new rules here as zproj expands.
+  _integrate_ensure_rule "ck-search" "$instructions_file" "$dry_run"
+}
+
 # Return the path to the skills/ directory bundled with this zproj installation.
 # Return the path to the skills/ directory bundled with this zproj installation.
 # Uses readlink -f to get the canonical absolute path of the script before
@@ -2646,6 +2744,9 @@ cmd_integrate() {
       echo ""
       echo -e "${BOLD}Skills:${RESET}"
       _integrate_install_skills true
+      echo ""
+      echo -e "${BOLD}Instructions:${RESET}"
+      _integrate_install_instructions true
     else
       step "Installing tools..."
       echo ""
@@ -2654,16 +2755,20 @@ cmd_integrate() {
       step "Installing skills..."
       echo ""
       _integrate_install_skills false
+      echo ""
+      step "Installing instructions..."
+      echo ""
+      _integrate_install_instructions false
     fi
     return 0
   fi
 
-  # ── Plan only (editor + tools + skills preview) ───────────────────────────
+  # ── Plan only (editor + tools + skills + instructions preview) ────────────
 
   if $plan_only; then
     _integrate_build_prompt
     echo ""
-    echo "## Tools & Skills"
+    echo "## Tools, Skills & Instructions"
     echo ""
     echo -e "${BOLD}Dry run — no changes will be made:${RESET}"
     echo ""
@@ -2672,10 +2777,13 @@ cmd_integrate() {
     echo ""
     echo -e "${BOLD}Skills:${RESET}"
     _integrate_install_skills true || true
+    echo ""
+    echo -e "${BOLD}Instructions:${RESET}"
+    _integrate_install_instructions true || true
     return 0
   fi
 
-  # ── Full integrate: install tools + skills, then hand off editor prompt ───
+  # ── Full integrate: install tools + skills + instructions, hand off editor ─
 
   check_session_deps
 
@@ -2704,6 +2812,12 @@ cmd_integrate() {
   step "Installing skills..."
   echo ""
   _integrate_install_skills false || true
+  echo ""
+
+  # Install global instructions rules
+  step "Installing instructions..."
+  echo ""
+  _integrate_install_instructions false || true
   echo ""
 
   # Build and hand off the editor integration prompt to the agent
@@ -2766,13 +2880,15 @@ usage_integrate() {
 
 ${BOLD}Usage:${RESET} $SCRIPT_NAME integrate [--plan] [--skills-only]
 
-  Installs ck and cqs if missing, copies bundled skill files, then asks your
-  coding agent to integrate your editor with the zproj review workflow.
+  Installs ck and cqs if missing, copies bundled skill files, ensures global
+  instruction rules are present, then asks your coding agent to integrate your
+  editor with the zproj review workflow.
 
-  Tools (ck, cqs) and skills are handled by zproj directly — no agent
-  involvement needed. Any \`skills/*/SKILL.md\` file in the zproj repository
-  is installed to the agent's global skills directory. Adding a new skill to
-  the repo is all that is needed for it to be picked up on the next run.
+  Tools (ck, cqs), skills, and instruction rules are handled by zproj directly
+  — no agent involvement needed. Any \`skills/*/SKILL.md\` file in the zproj
+  repository is installed to the agent's global skills directory. Adding a new
+  skill or rule to the repo is all that is needed for it to be picked up on
+  the next run.
 
   The editor integration prompt is assembled from facts zproj already knows
   (editor binary, agent binary, review notes path, zproj version) and
@@ -2801,6 +2917,12 @@ ${BOLD}Skills directory per agent:${RESET}
   claude   → ~/.claude/skills/
   codex    → ~/.agents/skills/
   amp      → ~/.config/agents/skills/
+
+${BOLD}Global instructions file per agent:${RESET}
+  opencode → ~/.config/opencode/AGENTS.md
+  claude   → ~/.claude/CLAUDE.md
+  codex    → ~/.codex/AGENTS.md
+  amp      → ~/.config/amp/AGENTS.md
 
 ${BOLD}Environment:${RESET}
   ZPROJ_INTEGRATE_DELAY   Seconds to wait for agent TUI before sending the
@@ -4406,6 +4528,76 @@ NOTES
   _t_check "SK8: no editor section in output" \
     bash -c '! echo "$1" | grep -q "zproj review dispatch"' -- "$sk8_out"
   rm -rf "$sk8_src" "$sk8_home" || true
+
+  # ── Section: IN — global instructions rules ───────────────────────────────
+
+  _section "IN1 — _agent_instructions_file: known agents return correct paths"
+  local in1_result
+  in1_result="$(_agent_instructions_file opencode 2>/dev/null)" || true
+  _t_check "IN1: opencode → .config/opencode/AGENTS.md" \
+    bash -c '[[ "$1" == */".config/opencode/AGENTS.md" ]]' -- "$in1_result"
+  in1_result="$(_agent_instructions_file claude 2>/dev/null)" || true
+  _t_check "IN1: claude → .claude/CLAUDE.md" \
+    bash -c '[[ "$1" == *"/.claude/CLAUDE.md" ]]' -- "$in1_result"
+  in1_result="$(_agent_instructions_file codex 2>/dev/null)" || true
+  _t_check "IN1: codex → .codex/AGENTS.md" \
+    bash -c '[[ "$1" == *"/.codex/AGENTS.md" ]]' -- "$in1_result"
+  in1_result="$(_agent_instructions_file amp 2>/dev/null)" || true
+  _t_check "IN1: amp → .config/amp/AGENTS.md" \
+    bash -c '[[ "$1" == */".config/amp/AGENTS.md" ]]' -- "$in1_result"
+
+  _section "IN2 — _agent_instructions_file: unsupported agents return 1"
+  local in2_exit
+  for in2_agent in aider goose gemini unknown-agent; do
+    in2_exit="$(_agent_instructions_file "$in2_agent" &>/dev/null; echo $?)" || true
+    _t_check "IN2: $in2_agent exits 1" test "$in2_exit" -eq 1
+  done
+
+  _section "IN3 — _integrate_ensure_rule: creates file with rule when absent"
+  local in3_home in3_file
+  in3_home="$(mktemp -d)"
+  in3_file="${in3_home}/.config/opencode/AGENTS.md"
+  HOME="$in3_home" _integrate_ensure_rule "ck-search" "$in3_file" false &>/dev/null
+  _t_check "IN3: file created"       test -f "$in3_file"
+  _t_check "IN3: rule present"       grep -q "$(_rule_marker "ck-search")" "$in3_file"
+  rm -rf "$in3_home" || true
+
+  _section "IN4 — _integrate_ensure_rule: appends rule to existing file without it"
+  local in4_home in4_file
+  in4_home="$(mktemp -d)"
+  in4_file="${in4_home}/.config/opencode/AGENTS.md"
+  mkdir -p "$(dirname "$in4_file")"
+  echo "Some other rule." > "$in4_file"
+  HOME="$in4_home" _integrate_ensure_rule "ck-search" "$in4_file" false &>/dev/null
+  _t_check "IN4: original content preserved" grep -q "Some other rule" "$in4_file"
+  _t_check "IN4: rule appended"              grep -q "$(_rule_marker "ck-search")" "$in4_file"
+  rm -rf "$in4_home" || true
+
+  _section "IN5 — _integrate_ensure_rule: idempotent when rule already present"
+  local in5_home in5_file in5_lines_before in5_lines_after
+  in5_home="$(mktemp -d)"
+  in5_file="${in5_home}/.config/opencode/AGENTS.md"
+  mkdir -p "$(dirname "$in5_file")"
+  printf '%s\n' "$(_rule_text "ck-search")" > "$in5_file"
+  in5_lines_before="$(wc -l < "$in5_file")"
+  HOME="$in5_home" _integrate_ensure_rule "ck-search" "$in5_file" false &>/dev/null
+  in5_lines_after="$(wc -l < "$in5_file")"
+  _t_check "IN5: line count unchanged" test "$in5_lines_before" -eq "$in5_lines_after"
+  rm -rf "$in5_home" || true
+
+  _section "IN6 — _integrate_ensure_rule: dry-run does not write files"
+  local in6_home in6_file in6_out
+  in6_home="$(mktemp -d)"
+  in6_file="${in6_home}/.config/opencode/AGENTS.md"
+  in6_out="$(HOME="$in6_home" _integrate_ensure_rule "ck-search" "$in6_file" true 2>/dev/null)"
+  _t_check "IN6: no file written"       bash -c '! test -f "$1"' -- "$in6_file"
+  _t_grep  "IN6: dry-run reports would-add" "would add" echo "$in6_out"
+  rm -rf "$in6_home" || true
+
+  _section "IN7 — integrate --plan: includes instructions dry-run section"
+  local in7_out
+  in7_out="$(CODING_AGENT=opencode "$BASH" "$0" integrate --plan 2>/dev/null)" || true
+  _t_grep "IN7: instructions section present" "Instructions" echo "$in7_out"
 
   # ── Summary ──────────────────────────────────────────────────────────────
 
