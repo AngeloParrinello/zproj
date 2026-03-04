@@ -10,38 +10,33 @@ metadata:
 
 # cqs — Code Intelligence CLI
 
-## Setup (required before first use in any project)
+## Setup
 
 ```bash
-cqs init        # Download ML model (~547MB, one-time per machine)
-cqs index       # Index the codebase (builds embeddings + call graph + HNSW)
+cqs init     # download ML model (one-time per machine)
+cqs index    # build embeddings + call graph
+cqs watch    # keep index fresh (run in background)
 ```
 
-Run `cqs watch` afterward to keep the index fresh automatically.
+Re-index when: files were added outside `watch`, or call graph shows 0 entries.
 
-**Re-index when:** new files were added outside of `watch`, or call graph shows 0 entries.
-
-## Git Worktrees (zproj)
-
-**Never cold-index a new worktree.** Copy the index from a sibling and delta-index instead:
+**Git worktrees (zproj):** never cold-index a new worktree — copy from a sibling:
 
 ```bash
-ls -dt ../*/. | head -5        # find most recently indexed sibling
-cp -r ../main/.cqs ./.cqs      # copy its index
-cqs index                      # delta-index
+ls -dt ../*/. | head -5 && cp -r ../main/.cqs ./.cqs && cqs index
 ```
 
-For finding code by text, pattern, or concept, use `ck` instead — `cqs` does not search source files.
+For finding code by text, pattern, or concept, use `ck` — `cqs` does not search source files.
 
 ## Critical Syntax Rules
 
-**`-q` is a global flag — it must come before the subcommand:**
+**`-q` is a global flag — must come before the subcommand:**
 ```
 cqs -q <command> <args> --json     ✓
-cqs <command> <args> --json -q     ✗ (error: unexpected argument)
+cqs <command> <args> --json -q     ✗
 ```
 
-**`notes add/remove/update` do not accept `-q` at all.**
+**`notes add/remove/update` do not accept `-q`.**
 
 **`trace`, `impact`, `review`, `ci` use `--format json`, not `--json`:**
 ```
@@ -52,19 +47,11 @@ cqs -q impact "encode" --json         ✗
 ## Do / Don't
 
 **Do:**
-- Use single quotes for queries containing `$` — in double quotes, `$letter` is silently expanded by the shell, changing the query without any error
-- Run `cqs init` + `cqs index` at the start of every new project
-- Start with `scout` or `task` before implementing
-- Use `impact` before any refactor — even "small" changes can have transitive callers
-- Use `--format json` for `trace`, `impact`, `review`, and `ci`
-- Use `-q` before the subcommand, never after
-- Use `cqs watch` in the background during long coding sessions
+- Use single quotes for queries containing `$` — double quotes silently expand `$letter`
+- Use `impact` before any refactor — even small changes can have transitive callers
 
 **Don't:**
-- Skip `cqs index` — without it, call graph and type graph will be empty
-- Use `--json` with `trace` or `impact` — it will error; use `--format json`
-- Append `-q` after the subcommand — it will error
-- Run `cqs index` repeatedly — it's expensive; `watch` handles incremental updates
+- Skip `cqs index` — call graph and type graph will be empty without it
 
 ---
 
@@ -73,14 +60,13 @@ cqs -q impact "encode" --json         ✗
 **There is no `search` subcommand.** The query is a bare positional argument.
 ```bash
 cqs -q "error handling" --json          # correct
-cqs -q search "error handling" --json   # WRONG — search is not a subcommand
+cqs -q search "error handling" --json   # WRONG
 ```
 
 ```bash
 cqs -q "<query>" [--lang L] [-n N] [-t N] [--name-only] [--semantic-only] [--rerank]
     [--path glob] [--chunk-type T] [--pattern P] [--tokens N] [--expand]
     [-C N] [--no-content] [--no-stale-check] --json
-
 cqs -q similar "<name>" --json
 cqs -q gather "<query>" [--expand N] [--direction both|callers|callees] [-n N] [--tokens N] --json
 cqs -q where "<description>" --json
@@ -97,7 +83,7 @@ cqs explain "<name>" --json
 ```bash
 cqs -q callers "<name>" --json
 cqs -q callees "<name>" --json
-cqs trace "<source>" "<target>" --format json       # --format json, not --json
+cqs trace "<source>" "<target>" --format json
 cqs -q deps "<name>" --json                         # forward: who uses this type?
 cqs -q deps --reverse "<name>" --json               # reverse: what types does this use?
 cqs -q related "<name>" --json
@@ -122,7 +108,7 @@ cqs ci [--base <ref>] [--stdin] [--gate high|medium|off] [--format json] [--toke
 
 ## Notes
 
-Notes do not accept `-q`.
+Notes do not accept `-q`. Sentiment: -1 serious pain → 0 neutral → 1 major win.
 
 ```bash
 cqs notes add "<text>" [--sentiment N] [--mentions a,b,c]
@@ -131,8 +117,6 @@ cqs notes update "<exact text>" [--new-text "..."] [--new-sentiment N]
 cqs notes remove "<exact text>"
 cqs audit-mode [on|off] [--expires 30m] --json
 ```
-
-Sentiment: -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win).
 
 ## Infrastructure
 
