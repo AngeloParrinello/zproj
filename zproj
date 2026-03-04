@@ -333,12 +333,18 @@ _agent_skills_dir() {
 }
 
 # Return the path to the skills/ directory bundled with this zproj installation.
-# Resolves via $0 (which follows symlinks), so it works whether zproj is run
-# directly from the repo or via a symlink in ~/.local/bin.
+# Return the path to the skills/ directory bundled with this zproj installation.
+# Resolves the *real* path of the running script before taking dirname, so it
+# works correctly when zproj is invoked via a symlink (e.g. ~/.local/bin/zproj).
+# cd "$(dirname "$0")" alone resolves to the symlink's directory, not the repo.
 # Prints the path and returns 0 if found; returns 1 with no output if absent.
 _resolve_zproj_skills_dir() {
+  local src="${BASH_SOURCE[0]:-$0}"
+  local real
+  # readlink -f follows the full chain of symlinks (works on macOS and Linux)
+  real="$(readlink -f "$src" 2>/dev/null)" || real="$src"
   local script_dir
-  script_dir="$(cd "$(dirname "$0")" && pwd)"
+  script_dir="$(cd "$(dirname "$real")" && pwd)"
   local skills_dir="${script_dir}/skills"
   if [[ -d "$skills_dir" ]]; then
     echo "$skills_dir"
