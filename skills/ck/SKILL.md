@@ -1,6 +1,6 @@
 ---
 name: ck
-description: "Use ck to locate code — finding implementations, definitions, patterns, and concepts by meaning or exact match. ck answers 'where is it?' For relationship questions (who calls it, what breaks, impact analysis), use cqs instead. Replaces grep, rg, and Glob for source files. Triggers: find, search, locate, where is, look for, find the implementation, where is it defined, show me code that, find all places where."
+description: "LOAD THIS SKILL before any code search. ck replaces grep, rg, and Glob for all source file searches — do not use grep or rg on source code. ck answers 'where is it?' by finding implementations, definitions, patterns, and concepts by meaning or exact match. For relationship questions (who calls it, what breaks, impact analysis), use cqs instead. Triggers: find, search, locate, where is, look for, find the implementation, where is it defined, show me code that, find all places where, search the codebase."
 license: MIT
 compatibility: opencode
 metadata:

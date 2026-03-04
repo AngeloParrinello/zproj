@@ -148,11 +148,15 @@ cqs -q stale --json                             # What needs re-indexing?
 
 ## Search & Discovery
 
-### search `<query>` — Semantic code search
-Finds functions by concept, not text. Use instead of grep/glob.
+### Semantic search — `cqs -q "<query>" [flags] --json`
 
-```
-cqs -q "<query>" [flags] --json
+**There is no `search` subcommand.** The query is a bare positional argument
+passed directly to `cqs`. Do not add `search` before the query — it will fail
+with "unexpected argument".
+
+```bash
+cqs -q "error handling" --json          # correct
+cqs -q search "error handling" --json   # WRONG — search is not a subcommand
 ```
 
 Response: `{ query, results: [{chunk_type, content, file, has_parent, language, line_start, line_end, name, score, signature, type}], total }`
