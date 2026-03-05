@@ -22,6 +22,12 @@ script — read and edit it directly. Do not create additional source files.
 When making changes:
 - Edit `zproj` in this directory (not via any symlink)
 - Bump `readonly VERSION=` (semver patch for fixes, minor for features)
+- Every new feature or behaviour change must be accompanied by tests in
+  `cmd_test()` — no exceptions
+- If you change the reference editor integration (the Lua code bundled in
+  `_integrate_build_prompt`), you must also apply the same change to the
+  live editor config at `~/.config/nvim/lua/plugins/diffview.lua` so they
+  stay in sync
 - Run `zproj --test` to execute the built-in test suite before committing
 - All tests must pass (0 failures) before committing
 
