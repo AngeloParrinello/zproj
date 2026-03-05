@@ -265,6 +265,13 @@ _resolve_editor() {
 # Print "s" if $1 != 1, else print nothing. Usage: "note$(_plural "$count")"
 _plural() { [[ "${1:-0}" == "1" ]] && echo "" || echo "s"; }
 
+# Derive a safe tmux session name from a directory name.
+# tmux uses '.' as a session:window.pane separator and ':' as a session:window
+# separator in its target syntax, so either character in a project directory
+# name causes every -t argument to be misparsed.  Replace both with '-'.
+# Usage: session_name="$(_tmux_session_name "$dir")"
+_tmux_session_name() { tr '.:'  '--' <<< "$1"; }
+
 # Return a human-readable label for which config source resolved the editor.
 # $1 = resolved editor binary name (first word of the resolved command)
 # Prints one of: "\$ZPROJ_EDITOR", "\$EDITOR", "default"
@@ -557,7 +564,7 @@ resolve_project_dir() {
     exit 1
   fi
 
-  SESSION_NAME="$(basename "$PARENT_DIR")"
+  SESSION_NAME="$(_tmux_session_name "$(basename "$PARENT_DIR")")"
   WINDOW_NAME="$WORKTREE_NAME"
 }
 
@@ -1433,7 +1440,7 @@ cmd_list() {
   [[ ! -d "$root/$BARE_DIR" ]] && die "No bare repo found. Run from a worktree root or specify a path."
 
   local root_name
-  root_name="$(basename "$root")"
+  root_name="$(_tmux_session_name "$(basename "$root")")"
 
   # Get list of tmux windows for this session (if session exists)
   local -a tmux_windows=()
@@ -1567,7 +1574,7 @@ cmd_open() {
   check_session_deps
 
   local session_name
-  session_name="$(basename "$root")"
+  session_name="$(_tmux_session_name "$(basename "$root")")"
 
   # Session already exists — just attach/switch
   if tmux has-session -t "$session_name" 2>/dev/null; then
@@ -1945,7 +1952,7 @@ _review_find_session() {
     return 1
   fi
 
-  SESSION_NAME="$(basename "$_REVIEW_REPO_ROOT")"
+  SESSION_NAME="$(_tmux_session_name "$(basename "$_REVIEW_REPO_ROOT")")"
   WINDOW_NAME="$(basename "$_REVIEW_WT_ROOT")"
   return 0
 }
@@ -3844,6 +3851,99 @@ NOTES
   _t_check "B10b: main/ created in spaced path"   test -d "$b10b_dir/main"
   _t_check "B10b: README.md moved into main/"     test -f "$b10b_dir/main/README.md"
   rm -rf "$(dirname "$b10b_dir")" || true
+
+  # ── Section: TM — tmux session name sanitisation ─────────────────────────
+  # Bug: '.' and ':' in a project directory name are tmux target-syntax
+  # separators (session:window.pane). Using them raw in -t arguments causes
+  # every tmux call to fail with "can't find pane: <suffix>".
+  # Fix: replace both characters with '-' when deriving SESSION_NAME.
+
+  _section "TM1 — session name: period sanitised to hyphen"
+  _t_check "TM1: period replaced with hyphen" \
+    test "$(_tmux_session_name "clank.sh")" = "clank-sh"
+
+  _section "TM2 — session name: colon sanitised to hyphen"
+  _t_check "TM2: colon replaced with hyphen" \
+    test "$(_tmux_session_name "foo:bar")" = "foo-bar"
+
+  _section "TM3 — session name: mixed dots and colons sanitised"
+  _t_check "TM3: all separators replaced" \
+    test "$(_tmux_session_name "a.b:c.d")" = "a-b-c-d"
+
+  _section "TM4 — session name: plain names pass through unchanged"
+  _t_check "TM4: plain name unchanged" \
+    test "$(_tmux_session_name "my-project")" = "my-project"
+
+  if command -v tmux &>/dev/null; then
+
+  _section "TM5 — launch: dotted project directory opens tmux session"
+  # init a bare worktree in a directory whose name contains a period,
+  # then launch and verify the session was created with a sanitised name.
+  local tm5_parent tm5_root tm5_session
+  tm5_parent="$(mktemp -d)"
+  tm5_root="${tm5_parent}/clank.sh"
+  tm5_session="clank-sh"   # expected sanitised name
+
+  ( "$BASH" "$0" init "$tm5_root" &>/dev/null ) || true
+  _t_check "TM5: bare repo created" test -d "$tm5_root/.bare"
+
+  (cd "$tm5_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch main &>/dev/null) || true
+
+  _t_check "TM5: tmux session exists with sanitised name" \
+    tmux has-session -t "$tm5_session"
+
+  # Verify the raw dotted name was NOT used (it would have been stored as
+  # clank_sh by tmux, which is distinct from clank-sh).
+  _t_check "TM5: raw dotted name not used as session" \
+    bash -c '! tmux has-session -t "clank_sh" 2>/dev/null'
+
+  tmux kill-session -t "$tm5_session" 2>/dev/null || true
+  rm -rf "$tm5_parent" || true
+
+  _section "TM6 — review dispatch: dotted project dir session found correctly"
+  # Create a bare worktree in a dotted directory, create a live tmux session
+  # with the sanitised name, write review notes, and verify dispatch finds it.
+  local tm6_parent tm6_root tm6_wt tm6_session
+  tm6_parent="$(mktemp -d)"
+  tm6_root="${tm6_parent}/my.proj"
+  tm6_session="my-proj"
+  tm6_wt="${tm6_root}/main"
+
+  ( "$BASH" "$0" init "$tm6_root" &>/dev/null ) || true
+
+  tmux new-session -d -s "$tm6_session" -n "main" -c "$tm6_wt" -x 220 -y 50 2>/dev/null || true
+  local tm6_pane
+  tm6_pane="$(tmux list-panes -t "$tm6_session:main" -F '#{pane_id}' | head -1)"
+  tmux send-keys -t "$tm6_pane" "cat" Enter 2>/dev/null || true
+
+  mkdir -p "$tm6_wt/.agents/plans" || true
+  printf "### \`src/X.scala\` line 1 -- 2026-01-01 00:00\nFix it.\n\n" \
+    > "$tm6_wt/.agents/plans/review-notes.md"
+
+  local tm6_dispatch_exit
+  tm6_dispatch_exit="$( (cd "$tm6_wt" && "$BASH" "$0" review dispatch &>/dev/null); echo $? )"
+  sleep 0.3
+
+  local tm6_content
+  tm6_content="$(tmux capture-pane -t "$tm6_pane" -p 2>/dev/null)"
+
+  _t_check "TM6: dispatch exits 0"                   test "$tm6_dispatch_exit" -eq 0
+  _t_grep  "TM6: pane received handoff message"      "zproj-review-"  echo "$tm6_content"
+  _t_check "TM6: notes file deleted after dispatch"  \
+    test ! -f "$tm6_wt/.agents/plans/review-notes.md"
+
+  tmux kill-session -t "$tm6_session" 2>/dev/null || true
+  rm -rf "$tm6_parent" || true
+
+  else
+    _t_skip "TM5: tmux not installed"
+    _t_skip "TM5: (skipped)"
+    _t_skip "TM5: (skipped)"
+    _t_skip "TM6: tmux not installed"
+    _t_skip "TM6: (skipped)"
+    _t_skip "TM6: (skipped)"
+    _t_skip "TM6: (skipped)"
+  fi
 
   # ── Section: S3 — upgrade rollback restores repo ─────────────────────────
   # Bug: &&/|| precedence in step 9 rollback could silently swallow mv failures.
