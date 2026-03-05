@@ -4,7 +4,7 @@ set -euo pipefail
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 readonly SCRIPT_NAME="zproj"
-readonly VERSION="4.9.4"
+readonly VERSION="4.9.5"
 readonly BARE_DIR=".bare"
 readonly GIT_POINTER=".git"
 readonly MIN_GIT_VERSION="2.5.0"
@@ -2383,11 +2383,117 @@ _integrate_build_prompt() {
   review_path_abs="$("$zproj_path" review path --abs 2>/dev/null)" \
     || review_path_abs="(run from inside a worktree)"
 
-  # Embed the reference Neovim implementation verbatim.
-  # Look for it relative to $HOME rather than a hardcoded user path.
-  local diffview_lua_path="${HOME}/.config/nvim/lua/plugins/diffview.lua"
-  diffview_lua_contents="$(cat "$diffview_lua_path" 2>/dev/null \
-    || echo "(reference file not found at \$HOME/.config/nvim/lua/plugins/diffview.lua)")"
+  # Embed the reference Neovim+diffview.nvim implementation as a literal
+  # heredoc bundled in the script — not read from the user's live config,
+  # which may not exist (the user may not use Neovim at all).
+  diffview_lua_contents="$(cat <<'DIFFVIEW_LUA'
+return {
+  {
+    "sindrets/diffview.nvim",
+    lazy = false,
+    dependencies = { "nvim-tree/nvim-web-devicons" },
+    opts = {
+      hooks = {
+        diff_buf_read = function(bufnr, _ctx)
+          vim.bo[bufnr].modifiable = false
+        end,
+        view_opened = function(_view)
+          vim.keymap.set("n", "<leader>rn", function()
+            local file = vim.fn.expand("%:p")
+            local line = vim.fn.line(".")
+            vim.ui.input({ prompt = "Note: " }, function(comment)
+              if not comment or comment == "" then return end
+              local review_file = vim.fn.system("zproj review path --abs 2>/dev/null"):gsub("\n", "")
+              if review_file == "" then
+                vim.notify("zproj review path failed — are you in a zproj worktree?", vim.log.levels.ERROR)
+                return
+              end
+              vim.fn.mkdir(vim.fn.fnamemodify(review_file, ":h"), "p")
+              local timestamp = os.date("%Y-%m-%d %H:%M")
+              local entry = string.format("### `%s` line %d -- %s\n%s\n\n", file, line, timestamp, comment)
+              local f = io.open(review_file, "a")
+              if f then
+                f:write(entry)
+                f:close()
+                vim.notify("Note added: " .. file .. ":" .. line)
+              else
+                vim.notify("Could not open review file: " .. review_file, vim.log.levels.ERROR)
+              end
+            end)
+          end, { desc = "Add review note" })
+
+          vim.keymap.set("n", "<leader>rv", function()
+            local review_file = vim.fn.system("zproj review path --abs 2>/dev/null"):gsub("\n", "")
+            if review_file == "" or vim.fn.filereadable(review_file) == 0 then
+              vim.notify("No review notes yet.", vim.log.levels.WARN)
+              return
+            end
+            vim.cmd("split " .. vim.fn.fnameescape(review_file))
+          end, { desc = "View review notes" })
+
+          vim.keymap.set("n", "<leader>rd", function()
+            local result = vim.fn.system("zproj review dispatch 2>&1")
+            local ok = vim.v.shell_error == 0
+            if ok then
+              vim.cmd("DiffviewClose")
+              vim.notify("Dispatched to coding agent.")
+            else
+              vim.notify("Dispatch failed: " .. result, vim.log.levels.ERROR)
+            end
+          end, { desc = "Dispatch review notes to coding agent" })
+
+          vim.keymap.set("n", "<leader>rc", function()
+            local result = vim.fn.system("zproj review clear 2>&1")
+            local ok = vim.v.shell_error == 0
+            if ok then
+              local review_file = vim.fn.system("zproj review path --abs 2>/dev/null"):gsub("\n", "")
+              if review_file ~= "" then
+                local bufnr = vim.fn.bufnr(review_file)
+                if bufnr ~= -1 then
+                  vim.cmd("bwipeout! " .. bufnr)
+                end
+              end
+              vim.notify("Review notes cleared.")
+            else
+              vim.notify("Clear failed: " .. result, vim.log.levels.ERROR)
+            end
+          end, { desc = "Clear review notes" })
+        end,
+        view_closed = function(_view)
+          pcall(vim.keymap.del, "n", "<leader>rn")
+          pcall(vim.keymap.del, "n", "<leader>rv")
+          pcall(vim.keymap.del, "n", "<leader>rd")
+          pcall(vim.keymap.del, "n", "<leader>rc")
+        end,
+      },
+    },
+    keys = {
+      {
+        "<leader>df",
+        function()
+          local file = vim.fn.expand("%:~:.")
+          if file ~= "" then
+            vim.cmd("DiffviewOpen HEAD -- " .. vim.fn.fnameescape(file))
+            vim.cmd("DiffviewToggleFiles")
+          end
+        end,
+        desc = "Diffview: current file",
+      },
+      {
+        "<leader>dq",
+        "<cmd>DiffviewClose<cr>",
+        desc = "Diffview: close",
+      },
+      {
+        "<leader>dh",
+        "<cmd>DiffviewFileHistory %<cr>",
+        desc = "Diffview: file history",
+      },
+    },
+  },
+}
+DIFFVIEW_LUA
+)"
 
   cat <<PROMPT
 # zproj Editor Integration Task
@@ -2512,17 +2618,27 @@ The four editor actions that must be bound are:
 
 ## Reference implementation (Neovim + diffview.nvim)
 
-This is a complete, working implementation from a known zproj installation
-using Neovim. Use it as a concrete example of what "done" looks like — not
-as a constraint. If the target editor is also Neovim, verify whether this
+This is a complete, working implementation for **Neovim with the diffview.nvim
+plugin**. It is provided as a concrete illustration of the pattern — not as a
+constraint or assumption about the user's editor.
+
+**If the user's editor is Neovim with diffview.nvim:** check whether this
 implementation (or something equivalent) is already present before adding
-anything. If the target editor is different, adapt the approach to its idioms.
+anything.
+
+**If the user's editor is anything else:** ignore this code entirely and
+implement the four actions using that editor's native idioms. The only
+invariants that must hold regardless of editor are:
+- The file path recorded in each note must be absolute
+- The review notes path must be obtained at runtime via \`zproj review path --abs\`
+- The note entry format must be exactly: \`### \`<abs-file>\` line <n> -- <YYYY-MM-DD HH:MM>\`
 
 \`\`\`lua
 ${diffview_lua_contents}
 \`\`\`
 
 Key observations from this implementation:
+- File path is recorded as absolute (\`vim.fn.expand("%:p")\`), never relative
 - The review notes path is obtained via \`zproj review path --abs\` (shelled
   out), never hardcoded
 - \`<leader>rn\` prompts interactively, captures file + line, appends entry
