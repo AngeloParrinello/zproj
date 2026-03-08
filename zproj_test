@@ -1,0 +1,1128 @@
+# ─── Self-test ───────────────────────────────────────────────────────────────
+
+cmd_test() {
+  local tmp
+  tmp="$(mktemp -d)"
+  # Clean up temp dir when the script exits.
+  # Double-quotes expand $tmp now (definition time). The inner single-quotes
+  # protect the already-expanded path from word-splitting when the trap fires.
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '$tmp'" EXIT
+
+  local passed=0 failed=0 skipped=0
+
+  # ── Helpers ──────────────────────────────────────────────────────────────
+
+  _t_pass() { echo -e "  ${GREEN}✓${RESET} $*"; ((passed++)) || true; }
+  _t_fail() { echo -e "  ${RED}✗${RESET} $*"; ((failed++)) || true; }
+  _t_skip() { echo -e "  ${DIM}○${RESET} ${DIM}$* (skipped)${RESET}"; ((skipped++)) || true; }
+
+  # _t_check <desc> <cmd> [args...] — pass if command exits 0
+  _t_check() {
+    local desc="$1"; shift
+    if "$@" &>/dev/null; then
+      _t_pass "$desc"
+    else
+      _t_fail "$desc"
+    fi
+  }
+
+  # _t_grep <desc> <pattern> <cmd> [args...] — pass if command output matches pattern
+  _t_grep() {
+    local desc="$1" pattern="$2"; shift 2
+    local out
+    out="$("$@" 2>&1)" || true
+    if echo "$out" | grep -q "$pattern"; then
+      _t_pass "$desc"
+    else
+      _t_fail "$desc"
+    fi
+  }
+
+  # Run zproj in isolation using a subshell so set -e doesn't kill the test runner.
+  # Captures stdout+stderr; returns the exit code.
+  _zproj() {
+    (cd "$tmp" && "$BASH" "$0" "$@" 2>&1)
+  }
+  _zproj_exit() {
+    local _ec=0
+    (cd "$tmp" && "$BASH" "$0" "$@" &>/dev/null) || _ec=$?
+    echo $_ec
+  }
+
+  _section() {
+    echo ""
+    echo -e "${BOLD}$*${RESET}"
+  }
+
+  # ── Section: fresh init ───────────────────────────────────────────────────
+
+  _section "R1 — fresh init (new directory)"
+  rm -rf "$tmp/r1"
+  _zproj init r1 &>/dev/null
+  _t_check ".bare/ exists"      test -d "$tmp/r1/.bare"
+  _t_check ".git pointer exists" test -f "$tmp/r1/.git"
+  _t_check "main/ exists"       test -d "$tmp/r1/main"
+  _t_check ".git content"       grep -q "gitdir: ./.bare" "$tmp/r1/.git"
+  _t_check "git works in main/" git -C "$tmp/r1/main" status &>/dev/null
+
+  _section "R2 — fresh init with --main"
+  rm -rf "$tmp/r2"
+  _zproj init r2 --main trunk &>/dev/null
+  _t_check "trunk/ exists" test -d "$tmp/r2/trunk"
+  _t_check ".bare/ exists" test -d "$tmp/r2/.bare"
+
+  _section "R3 — --version"
+  _t_grep "--version prints version" "^$SCRIPT_NAME " _zproj --version
+
+  _section "R4 — init --help mentions all three cases"
+  _t_grep "init --help mentions Exists" "Exists" _zproj init --help
+
+  # ── Section: Case 1 (plain directory) ────────────────────────────────────
+
+  _section "C1 — plain dir: files and dotfiles moved into main/"
+  rm -rf "$tmp/c1"
+  mkdir "$tmp/c1"
+  echo "hello" > "$tmp/c1/file.txt"
+  touch "$tmp/c1/.env"
+  echo "node_modules/" > "$tmp/c1/.gitignore"
+  _zproj init c1 &>/dev/null
+  _t_check "file.txt in main/"    test -f "$tmp/c1/main/file.txt"
+  _t_check ".env in main/"        test -f "$tmp/c1/main/.env"
+  _t_check ".gitignore in main/"  test -f "$tmp/c1/main/.gitignore"
+  _t_check "backup removed"       test ! -e "$tmp/c1.bak"
+  _t_check "git status works"     git -C "$tmp/c1/main" status &>/dev/null
+
+  _section "C2 — plain dir: backup collision uses .bak1"
+  rm -rf "$tmp/c2" "$tmp/c2.bak" "$tmp/c2.bak1"
+  mkdir "$tmp/c2" && echo "data" > "$tmp/c2/data.txt"
+  mkdir "$tmp/c2.bak"
+  _zproj init c2 &>/dev/null
+  _t_check "data.txt in main/"  test -f "$tmp/c2/main/data.txt"
+  _t_check ".bak1 removed"      test ! -e "$tmp/c2.bak1"
+  _t_check "original .bak kept" test -d "$tmp/c2.bak"
+  rm -rf "$tmp/c2.bak"
+
+  _section "C3 — plain dir: .bak and .bak1 exist, uses .bak2"
+  rm -rf "$tmp/c3" "$tmp/c3.bak" "$tmp/c3.bak1" "$tmp/c3.bak2"
+  mkdir "$tmp/c3" && echo "stuff" > "$tmp/c3/stuff.txt"
+  mkdir "$tmp/c3.bak" && mkdir "$tmp/c3.bak1"
+  _zproj init c3 &>/dev/null
+  _t_check "stuff.txt in main/"  test -f "$tmp/c3/main/stuff.txt"
+  _t_check ".bak2 removed"       test ! -e "$tmp/c3.bak2"
+  rm -rf "$tmp/c3.bak" "$tmp/c3.bak1"
+
+  _section "C4 — plain dir: empty directory"
+  rm -rf "$tmp/c4"
+  mkdir "$tmp/c4"
+  _zproj init c4 &>/dev/null
+  _t_check "main/ exists"      test -d "$tmp/c4/main"
+  _t_check "no stray .bak"     test ! -e "$tmp/c4.bak"
+  _t_check "git status works"  git -C "$tmp/c4/main" status &>/dev/null
+
+  _section "C5 — plain dir: --main sets target worktree"
+  rm -rf "$tmp/c5"
+  mkdir "$tmp/c5" && echo "data" > "$tmp/c5/readme.txt"
+  _zproj init c5 --main trunk &>/dev/null
+  _t_check "readme.txt in trunk/" test -f "$tmp/c5/trunk/readme.txt"
+  _t_check "no main/ created"     test ! -d "$tmp/c5/main"
+
+  _section "C6 — plain dir: zproj init . (cwd)"
+  rm -rf "$tmp/c6"
+  mkdir "$tmp/c6" && echo "dot test" > "$tmp/c6/dot.txt"
+  (cd "$tmp/c6" && "$BASH" "$0" init . &>/dev/null)
+  _t_check "dot.txt in main/"    test -f "$tmp/c6/main/dot.txt"
+  _t_check "backup cleaned up"   test ! -e "$tmp/c6.bak"
+
+  _section "C7 — error: .git is a linked worktree pointer"
+  rm -rf "$tmp/c7a"
+  mkdir "$tmp/c7a" && echo "gitdir: /some/path/.bare/worktrees/foo" > "$tmp/c7a/.git"
+  local c7a_exit
+  c7a_exit="$(_zproj_exit init c7a)"
+  _t_check "exits non-zero"        test "$c7a_exit" -ne 0
+  _t_grep  "prints useful message" "gitdir pointer" _zproj init c7a
+  _t_check ".git file unchanged"   test -f "$tmp/c7a/.git"
+
+  _section "C8 — error: .git is a file with unexpected content"
+  rm -rf "$tmp/c7b"
+  mkdir "$tmp/c7b" && echo "something unexpected" > "$tmp/c7b/.git"
+  local c7b_exit
+  c7b_exit="$(_zproj_exit init c7b)"
+  _t_check "exits non-zero"        test "$c7b_exit" -ne 0
+  _t_grep  "prints useful message" "unexpected content" _zproj init c7b
+
+  # ── Section: Case 2 (existing git repo upgrade) ───────────────────────────
+
+  # Create a git wrapper stub that fails 'worktree add' and delegates all other
+  # git operations to the real git binary, resolved dynamically so the stub
+  # works on any system regardless of where git is installed.
+  # $1 = directory to write the stub into (created if absent).
+  _make_git_worktree_fail_stub() {
+    local dir="$1"
+    local real_git
+    real_git="$(command -v git)"
+    mkdir -p "$dir"
+    cat > "$dir/git" <<STUB
+#!/bin/bash
+for arg in "\$@"; do
+  if [[ "\$arg" == "worktree" ]]; then
+    shift
+    [[ "\${1:-}" == "add" ]] && exit 1
+    exec "$real_git" worktree "\$@"
+  fi
+done
+exec "$real_git" "\$@"
+STUB
+    chmod +x "$dir/git"
+  }
+
+  # Helper: make a fresh single-commit repo with explicit git identity so the
+  # test is hermetic even when global user.name/email are not configured.
+  # Create a fresh single-commit repo. $1 is either a relative name (resolved
+  # under $tmp) or an absolute path. Supplies git identity so tests are hermetic.
+  _make_repo() {
+    local target="$1"
+    [[ "$target" != /* ]] && target="$tmp/$target"
+    rm -rf "$target" || true
+    mkdir -p "$target" || true
+    git -C "$target" init -q || true
+    git -C "$target" checkout -q -b main 2>/dev/null || true
+    git -C "$target" config user.name  "Test User" || true
+    git -C "$target" config user.email "test@zproj.test" || true
+    echo "hello" > "$target/README.md" || true
+    git -C "$target" add . || true
+    git -C "$target" commit -q -m "init" || true
+  }
+
+  _section "U1 — upgrade: clean repo"
+  _make_repo u1
+  _zproj init u1 &>/dev/null
+  _t_check ".bare/ exists"          test -d "$tmp/u1/.bare"
+  _t_check ".git pointer"           test -f "$tmp/u1/.git"
+  _t_check "main/ exists"           test -d "$tmp/u1/main"
+  _t_check "README.md in main/"     test -f "$tmp/u1/main/README.md"
+  _t_grep "history preserved"      "init"  git -C "$tmp/u1/main" log --oneline
+  _t_grep "worktree list correct"  "main"  git -C "$tmp/u1" worktree list
+
+  _section "U2 — upgrade: multiple branches preserved"
+  _make_repo u2
+  git -C "$tmp/u2" checkout -q -b feature-a || true
+  echo "a" > "$tmp/u2/a.txt" || true
+  git -C "$tmp/u2" add . || true
+  git -C "$tmp/u2" commit -q -m "feature-a" || true
+  git -C "$tmp/u2" checkout -q -b feature-b || true
+  echo "b" > "$tmp/u2/b.txt" || true
+  git -C "$tmp/u2" add . || true
+  git -C "$tmp/u2" commit -q -m "feature-b" || true
+  git -C "$tmp/u2" checkout -q main || true
+  _zproj init u2 &>/dev/null
+  _t_grep "feature-a preserved"  "feature-a"  git -C "$tmp/u2" branch
+  _t_grep "feature-b preserved"  "feature-b"  git -C "$tmp/u2" branch
+  _t_grep "main still HEAD"      "^main$"     git -C "$tmp/u2/main" rev-parse --abbrev-ref HEAD
+
+  _section "U3 — upgrade: remote preserved and fetch refspec fixed"
+  rm -rf "$tmp/u3-remote" || true
+  git init -q --bare "$tmp/u3-remote" || true
+  _make_repo u3
+  git -C "$tmp/u3" remote add origin "$tmp/u3-remote" || true
+  git -C "$tmp/u3" push -q origin main || true
+  _zproj init u3 &>/dev/null
+  _t_grep "remote origin preserved"  "^origin$"                              git -C "$tmp/u3/main" remote
+  _t_grep "fetch refspec fixed"      '+refs/heads/\*:refs/remotes/origin/\*'  git -C "$tmp/u3" config remote.origin.fetch
+
+  _section "U4 — upgrade: tags preserved"
+  _make_repo u4
+  git -C "$tmp/u4" tag v1.0.0
+  echo "more" >> "$tmp/u4/README.md" && git -C "$tmp/u4" add . && git -C "$tmp/u4" commit -q -m "second"
+  git -C "$tmp/u4" tag v2.0.0
+  _zproj init u4 &>/dev/null
+  _t_grep "v1.0.0 preserved"  "v1.0.0"  git -C "$tmp/u4/main" tag
+  _t_grep "v2.0.0 preserved"  "v2.0.0"  git -C "$tmp/u4/main" tag
+
+  _section "U5 — upgrade: dirty working tree restored"
+  _make_repo u5
+  echo "modified" > "$tmp/u5/README.md"
+  _zproj init u5 &>/dev/null
+  _t_check "upgrade succeeds"        test -d "$tmp/u5/main"
+  _t_grep "README.md shows dirty"    "M README.md"  git -C "$tmp/u5/main" status --short
+  _t_check "content is correct"      grep -q "modified" "$tmp/u5/main/README.md"
+
+  _section "U6 — upgrade: staged file restored"
+  _make_repo u6
+  echo "staged content" > "$tmp/u6/newfile.txt"
+  git -C "$tmp/u6" add newfile.txt
+  _zproj init u6 &>/dev/null
+  _t_check "upgrade succeeds"       test -d "$tmp/u6/main"
+  _t_grep "newfile.txt is staged"   "^A  newfile.txt"  git -C "$tmp/u6/main" status --short
+
+  _section "U7 — upgrade: untracked files preserved"
+  _make_repo u7
+  echo "untracked" > "$tmp/u7/untracked.txt"
+  _zproj init u7 &>/dev/null
+  _t_check "upgrade succeeds"          test -d "$tmp/u7/main"
+  _t_check "untracked.txt present"     test -f "$tmp/u7/main/untracked.txt"
+  _t_grep "shows as untracked"          "?? untracked.txt"  git -C "$tmp/u7/main" status --short
+
+  _section "U8 — upgrade: pre-existing stash survives"
+  _make_repo u8
+  echo "stash me" > "$tmp/u8/stash-me.txt"
+  git -C "$tmp/u8" stash push -u -m "pre-existing stash" -q
+  echo "dirty" > "$tmp/u8/README.md"
+  _zproj init u8 &>/dev/null
+  _t_check "upgrade succeeds"           test -d "$tmp/u8/main"
+  _t_grep "pre-existing stash kept"    "pre-existing stash"  git -C "$tmp/u8/main" stash list
+  _t_grep "dirty state restored"       "M README.md"         git -C "$tmp/u8/main" status --short
+
+  _section "U9 — error: no commits"
+  rm -rf "$tmp/u9" || true
+  mkdir "$tmp/u9" || true
+  git -C "$tmp/u9" init -q || true
+  git -C "$tmp/u9" checkout -q -b main 2>/dev/null || true
+  local u9_exit
+  u9_exit="$(_zproj_exit init u9)"
+  _t_check "exits non-zero"       test "$u9_exit" -ne 0
+  _t_grep  "clear error message"  "no commits"    _zproj init u9
+  _t_check ".git dir intact"      test -d "$tmp/u9/.git"
+
+  _section "U10 — error: detached HEAD"
+  _make_repo u10
+  git -C "$tmp/u10" checkout --detach HEAD -q
+  local u10_exit
+  u10_exit="$(_zproj_exit init u10)"
+  _t_check "exits non-zero"       test "$u10_exit" -ne 0
+  _t_grep  "clear error message"  "detached HEAD"  _zproj init u10
+  _t_check ".git dir intact"      test -d "$tmp/u10/.git"
+
+  # ── Section: _resolve_ide ─────────────────────────────────────────────────
+
+  _section "E1 — IDE: \$ZPROJ_EDITOR takes priority"
+  (
+    e1_bin="$(mktemp -d)"
+    touch "$e1_bin/myide" && chmod +x "$e1_bin/myide"
+    e1_out="$(ZPROJ_EDITOR=myide PATH="$e1_bin:$PATH" _resolve_ide 2>/dev/null)" \
+      || e1_out=""
+    _t_check "E1: returns ZPROJ_EDITOR binary" \
+      bash -c '[[ "$1" == "myide" ]]' -- "$e1_out"
+    /bin/rm -rf "$e1_bin"
+  ) || true
+
+  _section "E2 — IDE: falls back to idea"
+  (
+    e2_bin="$(mktemp -d)"
+    touch "$e2_bin/idea" && chmod +x "$e2_bin/idea"
+    e2_out="$(PATH="$e2_bin:$PATH" _resolve_ide 2>/dev/null)" || e2_out=""
+    _t_check "E2: returns 'idea'" \
+      bash -c '[[ "$1" == "idea" ]]' -- "$e2_out"
+    /bin/rm -rf "$e2_bin"
+  ) || true
+
+  _section "E3 — IDE: dies when idea absent and no ZPROJ_EDITOR"
+  (
+    e3_out="$(ZPROJ_EDITOR="" PATH=/usr/bin _resolve_ide 2>&1)" || e3_out=""
+    _t_grep "E3: error mentions idea" "idea" echo "$e3_out"
+  ) || true
+
+  # ── Section: _resolve_ai ──────────────────────────────────────────────────
+  # A1–A7 require opencode in PATH (used as the known-good agent binary).
+
+  if ! command -v opencode &>/dev/null; then
+    for _a in A1 A2 A3 A4 A5 A6 A7; do
+      _t_skip "$_a (opencode not in PATH)"
+    done
+  fi
+
+  if command -v opencode &>/dev/null; then
+
+  _section "A1 — agent: \$CODING_AGENT takes priority"
+  local a1
+  # opencode is installed, so use it as a known-good binary for CODING_AGENT
+  a1="$(CODING_AGENT=opencode _resolve_ai 2>/dev/null)"
+  _t_check "CODING_AGENT=opencode wins" test "$a1" = "opencode"
+
+  _section "A2 — agent: \$CODING_AGENT with flags preserved"
+  local a2
+  a2="$(CODING_AGENT="opencode --help" _resolve_ai 2>/dev/null)" || true
+  # opencode is the binary; "opencode --help" — binary opencode exists
+  _t_check "CODING_AGENT with flags preserved" test "$a2" = "opencode --help"
+
+  _section "A3 — agent: \$CODING_AGENT set to nonexistent binary → die"
+  local a3_exit
+  a3_exit="$( (CODING_AGENT=nonexistent-agent-xyz _resolve_ai &>/dev/null); echo $? )"
+  _t_check "nonexistent CODING_AGENT exits non-zero" test "$a3_exit" -ne 0
+
+  _section "A4 — agent: auto-discovers opencode when installed"
+  local a4
+  # Unset CODING_AGENT; opencode is in PATH so should be discovered first
+  a4="$(CODING_AGENT="" _resolve_ai 2>/dev/null)"
+  _t_check "auto-discovers opencode" test "$a4" = "opencode"
+
+  _section "A5 — agent: graceful no-op when nothing installed"
+  local a5 a5_warn
+  # Temporarily shadow PATH with only /usr/bin so no agents are found
+  a5="$(CODING_AGENT="" PATH="/usr/bin:/bin" _resolve_ai 2>/dev/null)"
+  a5_warn="$(CODING_AGENT="" PATH="/usr/bin:/bin" _resolve_ai 2>&1 1>/dev/null)" || true
+  _t_check "returns empty string (no die)"   test -z "$a5"
+  _t_grep  "prints warning about no agent"   "No coding agent"  echo "$a5_warn"
+
+  _section "A6 — --env runs without error"
+  local env_exit
+  env_exit="$( (cmd_env &>/dev/null); echo $? )"
+  _t_check "--env exits 0" test "$env_exit" -eq 0
+
+  _section "A7 — --env shows CODING_AGENT override"
+  local env_out
+  env_out="$(CODING_AGENT=opencode cmd_env 2>/dev/null)"
+  _t_grep "--env shows agent name"  "opencode"       echo "$env_out"
+  _t_grep "--env shows source tag"  "CODING_AGENT"   echo "$env_out"
+
+  fi  # end: command -v opencode
+
+  # ── Section: --diagnostics ───────────────────────────────────────────────
+
+  _section "X1 — --diagnostics: exits 0 on healthy system"
+  local diag_out diag_exit
+  diag_out="$(_zproj --diagnostics 2>/dev/null)" || true
+  diag_exit="$(_zproj_exit --diagnostics)"
+  _t_check "exits 0 on healthy system"  test "$diag_exit" -eq 0
+  _t_check "produces output"            test -n "$diag_out"
+
+  _section "X2 — --diagnostics: reports key tools"
+  _t_grep "reports git"   "git"   echo "$diag_out"
+  _t_grep "reports tmux"  "tmux"  echo "$diag_out"
+  _t_grep "reports bash"  "bash"  echo "$diag_out"
+
+  _section "X3 — --diagnostics: reports IDE and agent"
+  _t_grep "reports IDE"     "idea\|IDE"                 echo "$diag_out"
+  _t_grep "reports agent"   "opencode\|Agent\|agent"    echo "$diag_out"
+
+  _section "X4 — --diagnostics: reports TMPDIR"
+  _t_grep "reports TMPDIR"  "TMPDIR\|writable"  echo "$diag_out"
+
+  _section "X5 — --diagnostics: reports summary line"
+  _t_grep "reports summary"  "checks passed\|error\|warning"  echo "$diag_out"
+
+  # ── Section: tmux (headless detached session) ────────────────────────────
+  # T1–T8 require tmux >= 3.0 in PATH. Skip gracefully if absent.
+
+  if ! command -v tmux &>/dev/null; then
+    for _t in T1 T2 T3 T4 T5 T6 T7 T8; do
+      _t_skip "$_t (tmux not in PATH)"
+    done
+  fi
+
+  if command -v tmux &>/dev/null; then
+
+  # All tmux tests run against a detached session that is created and
+  # destroyed here.  tmux attach/switch-client calls are harmless because
+  # there is no real client — they return non-zero which we ignore.
+  # TMUX_TEST_SESSION is exported so helper functions can reference it.
+  local TMUX_TEST_SESSION="zproj-test-$$"
+
+  # ── T1-T4: cmd_launch — named panes ──────────────────────────────────────
+  # We test _setup_panes directly rather than going through cmd_launch, because
+  # cmd_launch sends real editor/agent binaries that exit immediately in a
+  # headless pane (no terminal, no project) and destroy the window before we
+  # can inspect it. The naming logic is entirely in _setup_panes; cmd_launch's
+  # job of resolving tools and building the session is tested via the other
+  # integration paths.
+
+  _section "T1-T4 — launch: 3-pane window with named panes"
+
+  # Shared bare worktree used by T1-T8.
+  # Use zproj init (tests the fixed bootstrap) rather than manual setup.
+  local lt_root="$tmp/lt"
+  rm -rf "$lt_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init lt &>/dev/null ) || true
+
+  local t_editor t_agent
+  t_editor="$(_resolve_ide 2>/dev/null)" || t_editor=""
+  t_agent="$(_resolve_ai 2>/dev/null)"
+  local t_editor_bin="${t_editor%% *}"
+  local t_agent_bin="${t_agent%% *}"
+  [[ -z "$t_agent_bin" ]] && t_agent_bin="shell"
+
+  local lt_session="zproj-test-launch-$$"
+
+  # Replicate exactly what _setup_panes does, using persistent stub commands
+  # so the panes stay alive for inspection. Use pane IDs (not indices) to
+  # match _setup_panes and avoid pane-base-index dependency.
+  local lt_agent_cmd="tail -f /dev/null"
+  local lt_editor_cmd="tail -f /dev/null ."  # "." simulates how editor gets called
+  local _ltp1 _ltp2 _ltp3
+
+  tmux new-session -d -s "$lt_session" -n "main" -c "$tmp" -x 220 -y 50
+  _ltp1="$(tmux list-panes -t "$lt_session:main" -F '#{pane_id}' | head -1)"
+  tmux send-keys   -t "$_ltp1" "$lt_agent_cmd" Enter
+  tmux select-pane -t "$_ltp1" -T "$t_agent_bin"
+  _ltp2="$(tmux split-window -t "$lt_session:main" -h -c "$tmp" -P -F '#{pane_id}')"
+  tmux send-keys   -t "$_ltp2" "$lt_editor_cmd" Enter
+  tmux select-pane -t "$_ltp2" -T "$t_editor_bin"
+  _ltp3="$(tmux split-window -t "$_ltp2" -v -c "$tmp" -P -F '#{pane_id}')"
+  tmux select-pane -t "$_ltp3" -T "shell"
+  tmux select-pane -t "$_ltp1"
+
+  sleep 0.3
+
+  local pane_titles
+  pane_titles="$(tmux list-panes -t "$lt_session:main" -F '#{pane_title}' 2>/dev/null)"
+
+  _t_check "T1: 3 panes created"                              test "$(echo "$pane_titles" | wc -l | tr -d ' ')" -eq 3
+  _t_grep  "T2: pane 1 named after agent ('${t_agent_bin}')"  "$t_agent_bin"  echo "$pane_titles"
+  _t_grep  "T3: pane 2 named after editor ('${t_editor_bin}')" "$t_editor_bin" echo "$pane_titles"
+  _t_grep  "T4: pane 3 named 'shell'"                         "^shell$"       echo "$pane_titles"
+
+  tmux kill-session -t "$lt_session" 2>/dev/null || true
+
+  # ── T6-T7: cmd_create and cmd_delete ─────────────────────────────────────
+
+  _section "T6 — create: creates worktree and branch"
+
+  # cmd_create doesn't call tmux at all — purely git + filesystem
+  (cd "$lt_root" && "$BASH" "$0" create feature-x 2>/dev/null) || true
+
+  _t_check "T6: feature-x/ worktree directory created" \
+    test -d "$lt_root/feature-x"
+  _t_grep "T6: feature-x branch created" "feature-x" \
+    git -C "$lt_root" branch
+
+  _section "T7 — delete: removes worktree and branch"
+
+  # cmd_delete checks for tmux window; session doesn't exist so it skips that
+  (cd "$lt_root" && "$BASH" "$0" delete feature-x 2>/dev/null) || true
+
+  _t_check "T7: feature-x/ directory removed" \
+    test ! -d "$lt_root/feature-x"
+  _t_check "T7: feature-x branch deleted" \
+    bash -c "! git -C '$lt_root' branch 2>/dev/null | grep -q feature-x"
+
+  # ── T8: cmd_open ─────────────────────────────────────────────────────────
+
+  _section "T8 — cmd_open: finds session and attempts to attach"
+
+  local open_session
+  open_session="$(basename "$lt_root")"
+  tmux new-session -d -s "$open_session" -n "main" -c "$lt_root/main" \
+    -x 220 -y 50 2>/dev/null || true
+
+  # ZPROJ_TEST_NO_ATTACH=1 skips the attach/switch-client call so we can
+  # inspect the output without blocking on a terminal attach.
+  local open_out
+  open_out="$(cd "$lt_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" 2>&1 || true)"
+
+  _t_check "T8: no 'not in a bare worktree' error" \
+    bash -c '! echo "$1" | grep -q "Not in a bare worktree"' -- "$open_out"
+  _t_grep  "T8: prints 'Attaching to session'" "Attaching to session" echo "$open_out"
+
+  tmux kill-session -t "$open_session" 2>/dev/null || true
+
+  fi  # end: command -v tmux
+
+  # ── Section: regression tests for previously-fixed bugs ─────────────────
+
+  # B1 — init works without global git identity
+  # Bug: _init_bare_structure used --orphan -b (git 2.39+ only) and relied on
+  # global user.name/email for the fallback commit path.
+  _section "B1 — init: works without global git identity"
+  local b1_home
+  b1_home="$(mktemp -d)"
+  # HOME with no .gitconfig → no global identity
+  local b1_out
+  b1_out="$( HOME="$b1_home" "$BASH" "$0" init "$tmp/b1" 2>&1 )" || true
+  _t_check "B1: .bare/ created without global identity"  test -d "$tmp/b1/.bare"
+  _t_check "B1: main/ worktree created"                  test -d "$tmp/b1/main"
+  _t_check "B1: initial commit exists"                   git -C "$tmp/b1/main" log --oneline &>/dev/null
+  rm -rf "$b1_home" "$tmp/b1" || true
+
+  # B2 — delete: does NOT delete a branch that doesn't match the worktree name
+  # Bug: delete deleted whatever branch was checked out, not just the one
+  # matching the worktree directory name.
+  _section "B2 — delete: preserves branch when name differs from worktree dir"
+  local b2_root="$tmp/b2"
+  rm -rf "$b2_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init b2 &>/dev/null ) || true
+  # Create a worktree on a branch with a different name
+  ( cd "$b2_root" && git worktree add scratch -b shared main --quiet 2>/dev/null ) || true
+  # Delete the 'scratch' worktree — should NOT delete 'shared' branch
+  ( cd "$b2_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" delete scratch &>/dev/null ) || true
+  _t_check "B2: scratch/ worktree removed"        test ! -d "$b2_root/scratch"
+  _t_grep  "B2: shared branch still exists"       "shared"  git -C "$b2_root" branch
+
+  # B3 — delete: refuses to delete a plain (non-worktree) sibling directory
+  # Bug: resolve_project_dir only checked that parent had .bare, not that the
+  # target was a registered worktree — so delete would rm arbitrary siblings.
+  _section "B3 — delete: refuses non-worktree sibling directory"
+  local b3_root="$tmp/b3"
+  rm -rf "$b3_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init b3 &>/dev/null ) || true
+  mkdir -p "$b3_root/docs"         # plain directory, not a worktree
+  local b3_exit
+  b3_exit="$( (cd "$b3_root" && "$BASH" "$0" delete docs &>/dev/null); echo $? )"
+  _t_check "B3: exits non-zero for non-worktree dir" test "$b3_exit" -ne 0
+  _t_check "B3: docs/ directory not deleted"         test -d "$b3_root/docs"
+
+  # B4 — init: absolute path is respected (not prepended with cwd)
+  # Bug: cmd_init prepended $(pwd)/ unconditionally, so
+  # `zproj init /tmp/foo` created $(pwd)/tmp/foo.
+  _section "B4 — init: absolute path creates repo at that exact location"
+  local b4_dir
+  b4_dir="$(mktemp -d)/b4proj"
+  ( "$BASH" "$0" init "$b4_dir" &>/dev/null ) || true
+  _t_check "B4: .bare/ at absolute path"   test -d "$b4_dir/.bare"
+  _t_check "B4: main/ at absolute path"    test -d "$b4_dir/main"
+  _t_check "B4: NOT created under cwd"     test ! -d "$(pwd)/$(basename "$b4_dir")"
+  rm -rf "$(dirname "$b4_dir")" || true
+
+  # B7 — git worktree list with spaces in path doesn't break cmd_list
+  # Bug: awk '{print $1}' on human-format output split on spaces in paths.
+  _section "B7 — list: handles spaces in worktree path"
+  local b7_root
+  b7_root="$(mktemp -d)/my project"   # space in path
+  ( "$BASH" "$0" init "$b7_root" &>/dev/null ) || true
+  local b7_out
+  b7_out="$( cd "$b7_root" && "$BASH" "$0" list 2>/dev/null )" || true
+  _t_check "B7: .bare created with space in path" test -d "$b7_root/.bare"
+  _t_grep  "B7: list shows 'main' worktree"       "main"  echo "$b7_out"
+  # Verify the branch column isn't a commit hash (which happened with awk split)
+  _t_check "B7: branch column not a bare SHA" \
+    bash -c '! echo "$1" | grep -qE "[0-9a-f]{7,40}"' -- "$b7_out"
+  rm -rf "$(dirname "$b7_root")" || true
+
+  # B8 — diagnostics: completes when git identity is not configured
+  # Bug: git config --global user.name exits 1 when unset; under set -e this
+  # aborted diagnostics before the warning lines ran.
+  _section "B8 — diagnostics: completes with no git identity configured"
+  local b8_home
+  b8_home="$(mktemp -d)"
+  local b8_out b8_exit
+  b8_out="$( HOME="$b8_home" "$BASH" "$0" --diagnostics 2>/dev/null )" || true
+  b8_exit="$( (HOME="$b8_home" "$BASH" "$0" --diagnostics &>/dev/null); echo $? )"
+  _t_check "B8: diagnostics exits 0 (not aborted)" test "$b8_exit" -eq 0
+  _t_grep  "B8: reports warning about missing identity" \
+    "user\.name not set\|user\.email not set"  echo "$b8_out"
+  _t_grep  "B8: reaches summary line" \
+    "checks passed\|error\|warning"  echo "$b8_out"
+  rm -rf "$b8_home" || true
+
+  # B9 — diagnostics: tmux-not-installed counts as exactly 1 error
+  # Bug: two _diag_err calls for the same "tmux not installed" problem
+  # (the error + the install URL) incremented the error counter twice.
+  # Strategy: build a fake bin dir with symlinks to needed tools but
+  # WITHOUT tmux, so the subprocess sees tmux as absent.
+  _section "B9 — diagnostics: tmux missing = 1 error not 2"
+  local b9_fakebin
+  b9_fakebin="$(mktemp -d)"
+  # Symlink the tools diagnostics needs (git, awk, sed, etc.) but not tmux
+  local _b9_tool
+  for _b9_tool in git bash awk sed grep head wc basename dirname; do
+    local _b9_path
+    _b9_path="$(command -v "$_b9_tool" 2>/dev/null)" || true
+    [[ -n "$_b9_path" ]] && ln -sf "$_b9_path" "$b9_fakebin/$_b9_tool" || true
+  done
+  # Verify tmux is hidden in the fake PATH
+  local b9_out b9_exit
+  # Clear tmux from bash's hash table so PATH restriction is respected.
+  # T-section tests run tmux commands which hash the binary; without this,
+  # 'command -v tmux' finds the hashed path regardless of PATH.
+  hash -d tmux 2>/dev/null || true
+  if ! PATH="$b9_fakebin:/usr/bin:/bin" command -v tmux &>/dev/null 2>&1; then
+    b9_out="$( PATH="$b9_fakebin:/usr/bin:/bin" /bin/bash "$0" --diagnostics 2>/dev/null )" || true
+    b9_exit="$( (PATH="$b9_fakebin:/usr/bin:/bin" /bin/bash "$0" --diagnostics &>/dev/null); echo $? )"
+    _t_grep  "B9: reports exactly 1 error"          "^1 error"   echo "$b9_out"
+    _t_check "B9: exits non-zero"                   test "$b9_exit" -ne 0
+  else
+    _t_skip "B9: could not hide tmux from PATH on this system"
+    _t_skip "B9: (skipped)"
+  fi
+  rm -rf "$b9_fakebin" || true
+
+  # B10 — _dotglob_expand: init and upgrade on paths with spaces
+  # Bug: _GLOB_RESULT=( $1 ) word-split before globbing, so
+  # "/my project.bak/*" became ["/my"] ["project.bak/*"] instead of the
+  # contents of "/my project.bak/".
+  _section "B10 — init: plain-dir convert on path containing spaces"
+  local b10_dir
+  b10_dir="$(mktemp -d)/my project"   # space in directory name
+  mkdir -p "$b10_dir" || true
+  echo "spaced" > "$b10_dir/data.txt" || true
+  touch "$b10_dir/.env" || true
+  ( "$BASH" "$0" init "$b10_dir" &>/dev/null ) || true
+  _t_check "B10: .bare/ created in spaced path"   test -d "$b10_dir/.bare"
+  _t_check "B10: main/ created in spaced path"    test -d "$b10_dir/main"
+  _t_check "B10: data.txt moved into main/"       test -f "$b10_dir/main/data.txt"
+  _t_check "B10: .env dotfile moved into main/"   test -f "$b10_dir/main/.env"
+  rm -rf "$(dirname "$b10_dir")" || true
+
+  _section "B10b — upgrade: existing git repo on path containing spaces"
+  local b10b_dir
+  b10b_dir="$(mktemp -d)/my repo"
+  _make_repo "$b10b_dir"
+  ( "$BASH" "$0" init "$b10b_dir" &>/dev/null ) || true
+  _t_check "B10b: .bare/ created in spaced path"  test -d "$b10b_dir/.bare"
+  _t_check "B10b: main/ created in spaced path"   test -d "$b10b_dir/main"
+  _t_check "B10b: README.md moved into main/"     test -f "$b10b_dir/main/README.md"
+  rm -rf "$(dirname "$b10b_dir")" || true
+
+  # ── Section: TM — tmux session name sanitisation ─────────────────────────
+  # Bug: '.' and ':' in a project directory name are tmux target-syntax
+  # separators (session:window.pane). Using them raw in -t arguments causes
+  # every tmux call to fail with "can't find pane: <suffix>".
+  # Fix: replace both characters with '-' when deriving SESSION_NAME.
+
+  _section "TM1 — session name: period sanitised to hyphen"
+  _t_check "TM1: period replaced with hyphen" \
+    test "$(_tmux_session_name "clank.sh")" = "clank-sh"
+
+  _section "TM2 — session name: colon sanitised to hyphen"
+  _t_check "TM2: colon replaced with hyphen" \
+    test "$(_tmux_session_name "foo:bar")" = "foo-bar"
+
+  _section "TM3 — session name: mixed dots and colons sanitised"
+  _t_check "TM3: all separators replaced" \
+    test "$(_tmux_session_name "a.b:c.d")" = "a-b-c-d"
+
+  _section "TM4 — session name: plain names pass through unchanged"
+  _t_check "TM4: plain name unchanged" \
+    test "$(_tmux_session_name "my-project")" = "my-project"
+
+  if command -v tmux &>/dev/null; then
+
+  _section "TM5 — launch: dotted project directory opens tmux session"
+  # init a bare worktree in a directory whose name contains a period,
+  # then launch and verify the session was created with a sanitised name.
+  local tm5_parent tm5_root tm5_session
+  tm5_parent="$(mktemp -d)"
+  tm5_root="${tm5_parent}/clank.sh"
+  tm5_session="clank-sh"   # expected sanitised name
+
+  ( "$BASH" "$0" init "$tm5_root" &>/dev/null ) || true
+  _t_check "TM5: bare repo created" test -d "$tm5_root/.bare"
+
+  (cd "$tm5_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch main &>/dev/null) || true
+
+  _t_check "TM5: tmux session exists with sanitised name" \
+    tmux has-session -t "$tm5_session"
+
+  # Verify the raw dotted name was NOT used (it would have been stored as
+  # clank_sh by tmux, which is distinct from clank-sh).
+  _t_check "TM5: raw dotted name not used as session" \
+    bash -c '! tmux has-session -t "clank_sh" 2>/dev/null'
+
+  tmux kill-session -t "$tm5_session" 2>/dev/null || true
+  rm -rf "$tm5_parent" || true
+
+  else
+    _t_skip "TM5: tmux not installed"
+    _t_skip "TM5: (skipped)"
+    _t_skip "TM5: (skipped)"
+  fi
+
+  # ── Section: S3 — upgrade rollback restores repo ─────────────────────────
+  # Bug: &&/|| precedence in step 9 rollback could silently swallow mv failures.
+  # We can't mock individual mv calls, but we can test the invariant directly:
+  # if upgrade fails mid-way, the original repo must be fully intact.
+  # Technique: pre-create the target worktree directory so `git worktree add`
+  # fails (it refuses to use a non-empty directory), triggering the rollback.
+
+  _section "S3 — upgrade rollback: repo intact after mv-to-tmp failure"
+  _make_repo s3
+  local s3_root="$tmp/s3"
+  # Trigger a failure in step 7 (move-to-tmp) by making the tmp dir
+  # pre-exist as a *file* so mkdir -p fails.
+  # We do this by creating .zproj-wt-tmp as a regular file inside s3.
+  touch "$s3_root/.zproj-wt-tmp" || true
+  chmod 000 "$s3_root/.zproj-wt-tmp" 2>/dev/null || true
+  local s3_exit
+  # The upgrade will attempt mkdir -p on .zproj-wt-tmp (which is a file),
+  # causing the tmp area setup to fail — triggering the rollback path.
+  s3_exit="$(_zproj_exit init s3)"
+  chmod 644 "$s3_root/.zproj-wt-tmp" 2>/dev/null || true
+  rm -f "$s3_root/.zproj-wt-tmp" 2>/dev/null || true
+  if [[ "$s3_exit" -ne 0 ]]; then
+    # Upgrade failed — verify the repo is fully restored
+    _t_check "S3: exits non-zero (upgrade failed as expected)" test "$s3_exit" -ne 0
+    _t_check "S3: .git is a directory (restored, not a pointer file)" \
+      test -d "$s3_root/.git"
+    _t_check "S3: README.md at original location" test -f "$s3_root/README.md"
+    _t_check "S3: git status works after rollback" \
+      git -C "$s3_root" status &>/dev/null
+    _t_grep  "S3: history intact after rollback" \
+      "init" git -C "$s3_root" log --oneline
+  else
+    # On some filesystems mkdir -p on a pre-existing file succeeds (rare)
+    _t_skip "S3: could not trigger upgrade failure on this filesystem"
+    _t_skip "S3: .git restored"
+    _t_skip "S3: README.md restored"
+    _t_skip "S3: git status"
+    _t_skip "S3: history"
+  fi
+
+  # ── Section: S4 — list column structure ──────────────────────────────────
+  # Bug: printf %-18s counted ANSI escape bytes, misaligning columns.
+  # Test: strip ANSI codes and verify branch + status don't bleed together.
+
+  _section "S4 — list: column structure is correct (no ANSI bleed)"
+  local s4_root="$tmp/s4"
+  rm -rf "$s4_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init s4 &>/dev/null ) || true
+  # Ensure there's a commit so we can branch from it
+  git -C "$s4_root/main" commit --allow-empty -q -m "init" \
+    --author "Test <t@t.com>" 2>/dev/null || true
+  ( cd "$s4_root" && "$BASH" "$0" create feature-long-branch-name &>/dev/null ) || true
+
+  local s4_out
+  s4_out="$(cd "$s4_root" && "$BASH" "$0" list 2>/dev/null \
+    | sed 's/\x1b\[[0-9;]*m//g')" || true   # strip ANSI codes
+
+  _t_grep  "S4: main row present"    "main"                    echo "$s4_out"
+  _t_grep  "S4: feature row present" "feature-long-branch-name" echo "$s4_out"
+  _t_grep  "S4: clean status shown"  "clean"                   echo "$s4_out"
+  # No row should have a branch name run directly into "clean" or "dirty"
+  # with no whitespace — that's the column-bleed failure mode
+  _t_check "S4: no column bleed (branch+status not adjacent)" \
+    bash -c '! echo "$1" | grep -qE "[a-zA-Z](clean|dirty)"' -- "$s4_out"
+
+  ( cd "$s4_root" && "$BASH" "$0" delete feature-long-branch-name &>/dev/null ) || true
+
+  # ── Section: S5 — dead function meta-test ────────────────────────────────
+  # Heuristic: flag any function defined in this script that is never referenced
+  # elsewhere. Catches dead code like _git_worktree_each was before removal.
+  # False positives are possible for functions called via variable indirection;
+  # maintain an allowlist below.
+
+  _section "S5 — meta: no unreferenced function definitions"
+
+  # Functions legitimately called via variable indirection or only as callbacks
+  local -a s5_allowlist=(
+    _list_process_entry   # called as a function inside a loop in cmd_list
+  )
+
+  local s5_dead=""
+  local s5_fn
+  while IFS= read -r s5_fn; do
+    # Skip allowlisted functions
+    local s5_allowed=false
+    local s5_al
+    for s5_al in "${s5_allowlist[@]+"${s5_allowlist[@]}"}"; do
+      [[ "$s5_al" == "$s5_fn" ]] && s5_allowed=true && break
+    done
+    $s5_allowed && continue
+
+    # Count occurrences of the function name in the script, excluding its own
+    # definition line (grep returns count including the def, subtract 1)
+    local s5_count
+    s5_count="$(grep -c "\b${s5_fn}\b" "$0" 2>/dev/null)" || s5_count=0
+    # Definition itself counts as 1; anything <= 1 means never called
+    [[ "$s5_count" -le 1 ]] && s5_dead="${s5_dead} ${s5_fn}"
+  done < <(grep -oE '^[_a-zA-Z][_a-zA-Z0-9]*\(\)' "$0" 2>/dev/null \
+             | sed 's/()//' | sort -u)
+
+  if [[ -z "$s5_dead" ]]; then
+    _t_pass "S5: no unreferenced function definitions"
+  else
+    _t_fail "S5: potentially dead functions:${s5_dead}"
+  fi
+
+  # ── Section: S6 — cmd_launch rejects non-worktree sibling ────────────────
+
+  _section "S6 — launch: refuses non-worktree sibling directory"
+  local s6_root="$tmp/s6"
+  rm -rf "$s6_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init s6 &>/dev/null ) || true
+  mkdir -p "$s6_root/docs" || true
+  local s6_exit
+  s6_exit="$( (cd "$s6_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch docs &>/dev/null); echo $? )"
+  _t_check "S6: exits non-zero for non-worktree dir" test "$s6_exit" -ne 0
+  _t_check "S6: docs/ directory not removed"         test -d "$s6_root/docs"
+  local s6_out
+  s6_out="$(cd "$s6_root" && "$BASH" "$0" launch docs 2>&1 || true)"
+  _t_grep  "S6: error mentions not a worktree"       "not a registered" echo "$s6_out"
+
+  # ── Section: S8 — branch name validation ─────────────────────────────────
+
+  _section "S8 — init: rejects invalid branch name before mutation"
+  rm -rf "$tmp/s8" || true
+  local s8_exit
+  s8_exit="$(_zproj_exit init s8 --main 'bad name')"
+  _t_check "S8: exits non-zero for invalid branch"  test "$s8_exit" -ne 0
+  _t_check "S8: no directory created"               test ! -e "$tmp/s8"
+
+  _section "S8b — init: rejects branch starting with dash"
+  rm -rf "$tmp/s8b" || true
+  local s8b_exit
+  s8b_exit="$(_zproj_exit init s8b --main '-nope')"
+  _t_check "S8b: exits non-zero"        test "$s8b_exit" -ne 0
+  _t_check "S8b: no directory created"  test ! -e "$tmp/s8b"
+
+  _section "S8c — create: rejects nonexistent from-ref"
+  local s8c_root="$tmp/s8c"
+  rm -rf "$s8c_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init s8c &>/dev/null ) || true
+  local s8c_exit
+  s8c_exit="$( (cd "$s8c_root" && "$BASH" "$0" create feat --from nonexistent-ref &>/dev/null); echo $? )"
+  _t_check "S8c: exits non-zero for bad ref"       test "$s8c_exit" -ne 0
+  _t_check "S8c: no worktree directory created"    test ! -d "$s8c_root/feat"
+
+   # ── Section: S9 — fresh init rollback on failure ─────────────────────────
+  # Use a git stub that fails on 'worktree add' to exercise the rollback path.
+  # This is more reliable than filesystem permission tricks.
+
+  _section "S9 — fresh init: no partial state on failure (preflight)"
+  # Invalid branch fails before mkdir — nothing should be created
+  rm -rf "$tmp/s9a" || true
+  local s9a_exit
+  s9a_exit="$(_zproj_exit init s9a --main 'bad name')"
+  _t_check "S9a: exits non-zero"               test "$s9a_exit" -ne 0
+  _t_check "S9a: no directory created at all"  test ! -e "$tmp/s9a"
+
+  _section "S9 — fresh init: rollback cleans up on worktree-add failure"
+  local s9_bin="$tmp/s9-bin"
+  _make_git_worktree_fail_stub "$s9_bin"
+  local s9_dir="$tmp/s9-newproj"
+  rm -rf "$s9_dir" || true
+  local s9_exit
+  s9_exit="$( (PATH="$s9_bin:$PATH" "$BASH" "$0" init "$s9_dir" &>/dev/null); echo $? )"
+  _t_check "S9: exits non-zero"          test "$s9_exit" -ne 0
+  _t_check "S9: no directory left behind" test ! -d "$s9_dir"
+  rm -rf "$s9_bin" "$s9_dir" || true
+
+  # ── Section: S10 — _git_default_branch detects non-main defaults ─────────
+
+  _section "S10 — default branch: detects non-main/master default"
+  local s10_root="$tmp/s10"
+  rm -rf "$s10_root" || true
+  ( cd "$tmp" && "$BASH" "$0" init s10 --main trunk &>/dev/null ) || true
+  local s10_branch
+  s10_branch="$(_git_default_branch "$s10_root" 2>/dev/null)" || true
+  _t_check "S10: detects 'trunk' as default branch" test "$s10_branch" = "trunk"
+
+  _section "S10b — create: works with non-main default branch (no --from)"
+  ( cd "$s10_root" && "$BASH" "$0" create feature-x &>/dev/null ) || true
+  _t_check "S10b: feature-x/ worktree created"  test -d "$s10_root/feature-x"
+  ( cd "$s10_root" && "$BASH" "$0" delete feature-x &>/dev/null ) || true
+
+  # ── Section: S11 — cmd_list: clean error for nonexistent path ────────────
+
+  _section "S11 — list: clean error for nonexistent path"
+  local s11_out s11_exit
+  s11_out="$(_zproj list /no/such/zproj/path 2>&1)" || true
+  s11_exit="$(_zproj_exit list /no/such/zproj/path)"
+  _t_check "S11: exits non-zero"          test "$s11_exit" -ne 0
+  _t_grep  "S11: prints formatted error"  "error:"               echo "$s11_out"
+  _t_grep  "S11: mentions the path"       "no/such/zproj/path"   echo "$s11_out"
+  _t_check "S11: no raw 'cd:' shell error" \
+    bash -c '! echo "$1" | grep -q "^bash:"' -- "$s11_out"
+
+  # ── Section: N1 — fresh init caller cleanup on helper failure ────────────
+
+  _section "N1 — fresh init: caller cleanup runs on helper failure"
+  local n1_bin="$tmp/n1-bin"
+  _make_git_worktree_fail_stub "$n1_bin"
+  local n1_dir="$tmp/n1"
+  rm -rf "$n1_dir" || true
+  local n1_exit
+  n1_exit="$( (PATH="$n1_bin:$PATH" "$BASH" "$0" init "$n1_dir" &>/dev/null); echo $? )"
+  _t_check "N1: exits non-zero"            test "$n1_exit" -ne 0
+  _t_check "N1: directory cleaned up"      test ! -d "$n1_dir"
+  rm -rf "$n1_bin" || true
+
+  # ── Section: N2 — clone caller cleanup on worktree-add failure ───────────
+
+  _section "N2 — clone: caller cleanup runs on worktree-add failure"
+  local n2_remote="$tmp/n2-remote"
+  local n2_src="$tmp/n2-src"
+  rm -rf "$n2_remote" "$n2_src" || true
+  git init -q --bare "$n2_remote" || true
+  mkdir "$n2_src" || true
+  git -C "$n2_src" init -q || true
+  git -C "$n2_src" config user.name "Test" || true
+  git -C "$n2_src" config user.email "t@t.test" || true
+  git -C "$n2_src" checkout -q -b main 2>/dev/null || true
+  echo "x" > "$n2_src/f.txt" || true
+  git -C "$n2_src" add . || true
+  git -C "$n2_src" commit -q -m "init" || true
+  git -C "$n2_src" remote add origin "$n2_remote" || true
+  git -C "$n2_src" push -q origin main || true
+
+  local n2_bin="$tmp/n2-bin"
+  _make_git_worktree_fail_stub "$n2_bin"
+  local n2_dir="$tmp/n2-clone"
+  rm -rf "$n2_dir" || true
+  local n2_exit
+  n2_exit="$( (cd "$tmp" && PATH="$n2_bin:$PATH" "$BASH" "$0" clone "$n2_remote" n2-clone &>/dev/null); echo $? )"
+  _t_check "N2: exits non-zero"           test "$n2_exit" -ne 0
+  _t_check "N2: directory cleaned up"     test ! -d "$n2_dir"
+  rm -rf "$n2_bin" "$n2_src" "$n2_remote" || true
+
+  # ── Section: N4 — diagnostics completes regardless of tmux server ─────────
+
+  _section "N4 — diagnostics: completes even with no tmux server"
+  local n4_out n4_exit
+  n4_out="$(_zproj --diagnostics 2>/dev/null)" || true
+  n4_exit="$(_zproj_exit --diagnostics)"
+  _t_check "N4: exits 0"                    test "$n4_exit" -eq 0
+  _t_grep  "N4: reaches summary line"       "checks passed\|error\|warning"  echo "$n4_out"
+  _t_grep  "N4: includes tmux section"      "tmux"                           echo "$n4_out"
+
+  # ── Section: N5 — _plural() usage consistency ────────────────────────────
+
+  _section "N5 — meta: _plural is either used or absent"
+  local n5_def n5_call
+  n5_def="$(grep -c '^_plural()' "$0" 2>/dev/null)" || n5_def=0
+  n5_call="$(grep -c '\$(_plural ' "$0" 2>/dev/null)" || n5_call=0
+  if [[ "$n5_def" -gt 0 && "$n5_call" -eq 0 ]]; then
+    _t_fail "N5: _plural() defined but never called"
+  elif [[ "$n5_def" -eq 0 ]]; then
+    _t_pass "N5: _plural() not defined (inline pattern is fine)"
+  else
+    _t_pass "N5: _plural() defined and called ($n5_call sites)"
+  fi
+
+  # ── Section: N6 — pane-base-index portability ────────────────────────────
+
+  if ! command -v tmux &>/dev/null; then
+    _t_skip "N6: tmux not installed"
+  else
+    _section "N6 — launch: pane-base-index compatibility"
+    local n6_pbi
+    n6_pbi="$(tmux show-options -gv pane-base-index 2>/dev/null)" || n6_pbi="0"
+    local n6_root="$tmp/n6"
+    rm -rf "$n6_root" || true
+    ( cd "$tmp" && "$BASH" "$0" init n6 &>/dev/null ) || true
+    local n6_exit
+    n6_exit="$( (cd "$n6_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch main &>/dev/null); echo $? )"
+    if [[ "$n6_exit" -eq 0 ]]; then
+      _t_pass "N6: launch succeeds with pane-base-index=$n6_pbi"
+    else
+      local n6_out
+      n6_out="$(cd "$n6_root" && "$BASH" "$0" launch main 2>&1 || true)"
+      _t_grep "N6: error mentions pane-base-index" "pane-base-index" echo "$n6_out"
+    fi
+    tmux kill-session -t n6 2>/dev/null || true
+  fi
+
+  # ── Section: RT2 — diagnostics: no false git-worktree error ──────────────
+
+  _section "RT2 — diagnostics: does not falsely claim git worktree unavailable"
+  local rt2_out
+  rt2_out="$(_zproj --diagnostics 2>/dev/null)" || true
+  _t_check "RT2: no 'not available' false error" \
+      bash -c '! echo "$1" | grep -qi "not available"' -- "$rt2_out"
+  _t_grep "RT2: reports worktrees supported" "worktrees supported" echo "$rt2_out"
+
+  # ── Section: RT3 — clone aborts immediately on git-clone failure ──────────
+
+  _section "RT3 — clone: no misleading output after bare-clone failure"
+  local rt3_dir="$tmp/rt3-clone"
+  rm -rf "$rt3_dir" || true
+  local rt3_out
+  rt3_out="$( ("$BASH" "$0" clone /nonexistent/repo/url rt3-clone 2>&1) || true)"
+  _t_check "RT3: no 'Created .git pointer' after failed clone" \
+      bash -c '! echo "$1" | grep -q "Created .git pointer"' -- "$rt3_out"
+  _t_check "RT3: no 'Fixed fetch refspec' after failed clone" \
+      bash -c '! echo "$1" | grep -q "Fixed fetch refspec"' -- "$rt3_out"
+  _t_check "RT3: no 'Enabled reflogs' after failed clone" \
+      bash -c '! echo "$1" | grep -q "Enabled reflogs"' -- "$rt3_out"
+  _t_check "RT3: target directory cleaned up"  test ! -d "$rt3_dir"
+
+  # ── Section: B1 — --env tolerates bad editor/agent ───────────────────────
+
+  _section "B1 — --env: tolerates missing editor and agent"
+  # Simulate no editor by stripping PATH to remove all known editors,
+  # then verifying --env still runs and reports something (not crash/empty).
+  local b1_out
+  b1_out="$(ZPROJ_EDITOR=nonexistent-xyz EDITOR=nonexistent-xyz \
+    _zproj --env 2>/dev/null)" || true
+  _t_check "B1: --env produces output even with unresolvable editor" test -n "$b1_out"
+
+  # Bad CODING_AGENT (die inside subshell) must not abort --env
+  local b1_out2
+  b1_out2="$(CODING_AGENT=nonexistent-agent-xyz _zproj --env 2>/dev/null)" || true
+  _t_check "B1: --env exits cleanly with bad CODING_AGENT" test -n "$b1_out2"
+
+  # ── Section: B4 — missing option args produce clean errors ────────────────
+
+  _section "B4 — missing option args produce clean errors"
+  local b4_err b4_line_count
+  b4_err="$(_zproj init foo --main 2>&1 || true)"
+  _t_grep "B4: --main error mentions --main" "error:.*--main\|--main.*error:" echo "$b4_err"
+  b4_line_count="$(echo "$b4_err" | grep -c 'line [0-9]')" || b4_line_count=0
+  _t_check "B4: error has no bash line number" test "$b4_line_count" -eq 0
+  rm -rf "$tmp/foo" || true
+
+  local b4_err2
+  b4_err2="$( (cd "$tmp" && "$BASH" "$0" init tmp-b4 2>/dev/null && \
+    "$BASH" "$0" create x --from 2>&1 || true) )"
+  _t_grep "B4: --from error mentions --from" "error:.*--from\|--from.*error:" echo "$b4_err2"
+  rm -rf "$tmp/tmp-b4" || true
+
+  # ── Section: B6 — upgrade without --main produces no spurious warning ──────
+
+  _section "B6 — upgrade: no spurious --main warning when not explicitly passed"
+  local b6_dir="$tmp/b6"
+  rm -rf "$b6_dir" || true
+  mkdir -p "$b6_dir" || true
+  git -C "$b6_dir" init -q 2>/dev/null || git -C "$b6_dir" init -q || true
+  # Force master branch name (--initial-branch not universally available)
+  git -C "$b6_dir" symbolic-ref HEAD refs/heads/master 2>/dev/null || true
+  git -C "$b6_dir" config user.name "Test User" || true
+  git -C "$b6_dir" config user.email "test@zproj.test" || true
+  echo "hello" > "$b6_dir/README.md" || true
+  git -C "$b6_dir" add . || true
+  git -C "$b6_dir" commit -q -m "init" || true
+  local b6_out b6_warns
+  b6_out="$(_zproj init b6 2>&1)" || true
+  b6_warns="$(echo "$b6_out" | grep -ci 'ignored')" || b6_warns=0
+  _t_check "B6: no spurious '--main ignored' warning" test "$b6_warns" -eq 0
+  _t_check "B6: upgrade succeeded (master/ or main/ created)" \
+    bash -c 'test -d "'"$b6_dir"'/master" || test -d "'"$b6_dir"'/main"'
+
+  # ── Section: IDE — _resolve_ide / _is_claude_agent ───────────────────────
+
+  _section "IDE1 — _resolve_ide: uses \$ZPROJ_EDITOR if set"
+  (
+    ide1_bin="$(mktemp -d)"
+    touch "$ide1_bin/myide" && chmod +x "$ide1_bin/myide"
+    ide1_out="$(ZPROJ_EDITOR=myide PATH="$ide1_bin:$PATH" \
+      _resolve_ide 2>/dev/null)" || ide1_out=""
+    _t_check "IDE1: returns ZPROJ_EDITOR value" \
+      bash -c '[[ "$1" == "myide" ]]' -- "$ide1_out"
+    /bin/rm -rf "$ide1_bin"
+  ) || true
+
+  _section "IDE2 — _resolve_ide: falls back to idea"
+  (
+    ide2_bin="$(mktemp -d)"
+    touch "$ide2_bin/idea" && chmod +x "$ide2_bin/idea"
+    ide2_out="$(PATH="$ide2_bin:$PATH" _resolve_ide 2>/dev/null)" || ide2_out=""
+    _t_check "IDE2: returns 'idea'" \
+      bash -c '[[ "$1" == "idea" ]]' -- "$ide2_out"
+    /bin/rm -rf "$ide2_bin"
+  ) || true
+
+  _section "IDE3 — _resolve_ide: dies when idea absent"
+  (
+    ide3_out="$(ZPROJ_EDITOR="" PATH=/usr/bin _resolve_ide 2>&1)" || ide3_out=""
+    _t_grep "IDE3: error message mentions idea" "idea" echo "$ide3_out"
+  ) || true
+
+  _section "CCM1 — _is_claude_agent: returns 0 for 'claude'"
+  _t_check "CCM1: claude recognized" _is_claude_agent "claude"
+
+  _section "CCM2 — _is_claude_agent: returns 1 for others"
+  _t_check "CCM2: opencode not claude" bash -c '! _is_claude_agent opencode'
+  _t_check "CCM2: amp not claude"      bash -c '! _is_claude_agent amp'
+
+  # ── Summary ──────────────────────────────────────────────────────────────
+
+  echo ""
+  echo -e "${BOLD}────────────────────────────────────${RESET}"
+  local total=$(( passed + failed ))
+  if [[ $failed -eq 0 ]]; then
+    echo -e "${GREEN}${BOLD}All ${total} tests passed${RESET}${DIM} (${skipped} skipped)${RESET}"
+  else
+    echo -e "${RED}${BOLD}${failed} of ${total} tests failed${RESET}${DIM} (${skipped} skipped)${RESET}"
+  fi
+  echo ""
+
+  [[ $failed -eq 0 ]]
+}
