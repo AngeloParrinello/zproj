@@ -1449,18 +1449,16 @@ ${BOLD}╚══════╝╚═╝     ╚═╝  ╚═╝ ╚═══�
 ${BOLD}${SCRIPT_NAME}${RESET} — parallel workspaces with bare git worktrees and tmux
 
 ${BOLD}Usage:${RESET}
-  $SCRIPT_NAME                                     Open project session (from repo root)
-  $SCRIPT_NAME <worktree-dir>                      Create (if needed) and launch
-  $SCRIPT_NAME init <dir> [--main <branch>]        Init, convert, or upgrade to bare worktree repo
-  $SCRIPT_NAME clone <git-url> [dir]               Clone remote repo as bare worktree structure
-  $SCRIPT_NAME create <worktree-dir> [--from ref]  Create a new worktree
-  $SCRIPT_NAME delete <worktree-dir> [--force]     Remove worktree, branch, and window
-  $SCRIPT_NAME launch <worktree-dir>               Launch (or focus) tmux window for a worktree
-  $SCRIPT_NAME list [dir]                          List all worktrees with status
-  $SCRIPT_NAME --env                               Show resolved IDE and agent
-  $SCRIPT_NAME --diagnostics                       Full environment health check
-  $SCRIPT_NAME --version                           Print version
-  $SCRIPT_NAME --test                              Run self-tests
+  $SCRIPT_NAME                                  Open project session (from repo root)
+  $SCRIPT_NAME <worktree-dir>                   Create (if needed) and launch
+  $SCRIPT_NAME init <dir> [--main <branch>]     Init, convert, or upgrade to bare worktree repo
+  $SCRIPT_NAME clone <git-url> [dir]            Clone remote repo as bare worktree structure
+  $SCRIPT_NAME delete <worktree-dir> [--force]  Remove worktree, branch, and window
+  $SCRIPT_NAME list [dir]                       List all worktrees with status
+  $SCRIPT_NAME --env                            Show resolved IDE and agent
+  $SCRIPT_NAME --diagnostics                    Full environment health check
+  $SCRIPT_NAME --version                        Print version
+  $SCRIPT_NAME --test                           Run self-tests
 
 ${BOLD}Directory resolution:${RESET}
   From the bare repo root:   $SCRIPT_NAME feature-auth
@@ -1473,14 +1471,13 @@ ${BOLD}Tmux layout:${RESET}
   Run ${CYAN}$SCRIPT_NAME --env${RESET} to see which tools will be used.
 
 ${BOLD}Examples:${RESET}
-  $SCRIPT_NAME init my-project          ${DIM}# new empty repo${RESET}
-  $SCRIPT_NAME init my-project          ${DIM}# existing dir: converts or upgrades${RESET}
+  $SCRIPT_NAME init my-project          ${DIM}# new empty repo (or converts/upgrades existing)${RESET}
   $SCRIPT_NAME clone git@github.com:zio/zio-blocks.git
   cd zio-blocks
   $SCRIPT_NAME                          ${DIM}# opens session (main window)${RESET}
-  $SCRIPT_NAME feature-auth             ${DIM}# adds window to existing session${RESET}
+  $SCRIPT_NAME feature-auth             ${DIM}# create worktree + branch + tmux window${RESET}
   $SCRIPT_NAME feature-auth             ${DIM}# re-run switches to existing window${RESET}
-  $SCRIPT_NAME delete fix-bug           ${DIM}# removes worktree, branch, and window${RESET}
+  $SCRIPT_NAME delete feature-auth      ${DIM}# removes worktree, branch, and window${RESET}
 
 EOF
 }
@@ -1869,17 +1866,9 @@ main() {
     shift
     cmd_clone "$@"
     ;;
-  create)
-    shift
-    cmd_create "$@"
-    ;;
   delete)
     shift
     cmd_delete "$@"
-    ;;
-  launch)
-    shift
-    cmd_launch "$@"
     ;;
   list)
     shift
@@ -1889,5 +1878,15 @@ main() {
   *) cmd_default "$1" ;;
   esac
 }
+
+# Source the test suite from a sibling file so it stays maintainable
+# without bloating the main script.
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -f "$_SCRIPT_DIR/zproj_test" ]]; then
+  # shellcheck source=zproj_test
+  source "$_SCRIPT_DIR/zproj_test"
+else
+  cmd_test() { die "zproj_test not found next to this script."; }
+fi
 
 main "$@"

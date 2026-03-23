@@ -318,7 +318,7 @@ STUB
 
   _section "E3 — IDE: dies when idea absent and no ZPROJ_EDITOR"
   (
-    e3_out="$(ZPROJ_EDITOR="" PATH=/usr/bin _resolve_ide 2>&1)" || e3_out=""
+    e3_out="$(ZPROJ_EDITOR="" PATH=/usr/bin _resolve_ide 2>&1)" || true
     _t_grep "E3: error mentions idea" "idea" echo "$e3_out"
   ) || true
 
@@ -473,12 +473,13 @@ STUB
 
   tmux kill-session -t "$lt_session" 2>/dev/null || true
 
-  # ── T6-T7: cmd_create and cmd_delete ─────────────────────────────────────
+  # ── T6-T7: worktree creation (via git) and cmd_delete ────────────────────
 
-  _section "T6 — create: creates worktree and branch"
+  _section "T6 — setup: create feature-x worktree for delete test"
 
-  # cmd_create doesn't call tmux at all — purely git + filesystem
-  (cd "$lt_root" && "$BASH" "$0" create feature-x 2>/dev/null) || true
+  # Use git directly so no tmux session is opened (cmd_delete refuses to
+  # remove a worktree whose window is still open unless --force is given).
+  (cd "$lt_root" && git worktree add -b feature-x feature-x main 2>/dev/null) || true
 
   _t_check "T6: feature-x/ worktree directory created" \
     test -d "$lt_root/feature-x"
@@ -697,7 +698,7 @@ STUB
   ( "$BASH" "$0" init "$tm5_root" &>/dev/null ) || true
   _t_check "TM5: bare repo created" test -d "$tm5_root/.bare"
 
-  (cd "$tm5_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch main &>/dev/null) || true
+  (cd "$tm5_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" main &>/dev/null) || true
 
   _t_check "TM5: tmux session exists with sanitised name" \
     tmux has-session -t "$tm5_session"
@@ -767,7 +768,7 @@ STUB
   # Ensure there's a commit so we can branch from it
   git -C "$s4_root/main" commit --allow-empty -q -m "init" \
     --author "Test <t@t.com>" 2>/dev/null || true
-  ( cd "$s4_root" && "$BASH" "$0" create feature-long-branch-name &>/dev/null ) || true
+  ( cd "$s4_root" && git worktree add feature-long-branch-name -b feature-long-branch-name 2>/dev/null ) || true
 
   local s4_out
   s4_out="$(cd "$s4_root" && "$BASH" "$0" list 2>/dev/null \
@@ -822,21 +823,6 @@ STUB
     _t_fail "S5: potentially dead functions:${s5_dead}"
   fi
 
-  # ── Section: S6 — cmd_launch rejects non-worktree sibling ────────────────
-
-  _section "S6 — launch: refuses non-worktree sibling directory"
-  local s6_root="$tmp/s6"
-  rm -rf "$s6_root" || true
-  ( cd "$tmp" && "$BASH" "$0" init s6 &>/dev/null ) || true
-  mkdir -p "$s6_root/docs" || true
-  local s6_exit
-  s6_exit="$( (cd "$s6_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch docs &>/dev/null); echo $? )"
-  _t_check "S6: exits non-zero for non-worktree dir" test "$s6_exit" -ne 0
-  _t_check "S6: docs/ directory not removed"         test -d "$s6_root/docs"
-  local s6_out
-  s6_out="$(cd "$s6_root" && "$BASH" "$0" launch docs 2>&1 || true)"
-  _t_grep  "S6: error mentions not a worktree"       "not a registered" echo "$s6_out"
-
   # ── Section: S8 — branch name validation ─────────────────────────────────
 
   _section "S8 — init: rejects invalid branch name before mutation"
@@ -853,14 +839,6 @@ STUB
   _t_check "S8b: exits non-zero"        test "$s8b_exit" -ne 0
   _t_check "S8b: no directory created"  test ! -e "$tmp/s8b"
 
-  _section "S8c — create: rejects nonexistent from-ref"
-  local s8c_root="$tmp/s8c"
-  rm -rf "$s8c_root" || true
-  ( cd "$tmp" && "$BASH" "$0" init s8c &>/dev/null ) || true
-  local s8c_exit
-  s8c_exit="$( (cd "$s8c_root" && "$BASH" "$0" create feat --from nonexistent-ref &>/dev/null); echo $? )"
-  _t_check "S8c: exits non-zero for bad ref"       test "$s8c_exit" -ne 0
-  _t_check "S8c: no worktree directory created"    test ! -d "$s8c_root/feat"
 
    # ── Section: S9 — fresh init rollback on failure ─────────────────────────
   # Use a git stub that fails on 'worktree add' to exercise the rollback path.
@@ -894,11 +872,6 @@ STUB
   local s10_branch
   s10_branch="$(_git_default_branch "$s10_root" 2>/dev/null)" || true
   _t_check "S10: detects 'trunk' as default branch" test "$s10_branch" = "trunk"
-
-  _section "S10b — create: works with non-main default branch (no --from)"
-  ( cd "$s10_root" && "$BASH" "$0" create feature-x &>/dev/null ) || true
-  _t_check "S10b: feature-x/ worktree created"  test -d "$s10_root/feature-x"
-  ( cd "$s10_root" && "$BASH" "$0" delete feature-x &>/dev/null ) || true
 
   # ── Section: S11 — cmd_list: clean error for nonexistent path ────────────
 
@@ -989,12 +962,12 @@ STUB
     rm -rf "$n6_root" || true
     ( cd "$tmp" && "$BASH" "$0" init n6 &>/dev/null ) || true
     local n6_exit
-    n6_exit="$( (cd "$n6_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" launch main &>/dev/null); echo $? )"
+    n6_exit="$( (cd "$n6_root" && ZPROJ_TEST_NO_ATTACH=1 "$BASH" "$0" main &>/dev/null); echo $? )"
     if [[ "$n6_exit" -eq 0 ]]; then
       _t_pass "N6: launch succeeds with pane-base-index=$n6_pbi"
     else
       local n6_out
-      n6_out="$(cd "$n6_root" && "$BASH" "$0" launch main 2>&1 || true)"
+      n6_out="$(cd "$n6_root" && "$BASH" "$0" main 2>&1 || true)"
       _t_grep "N6: error mentions pane-base-index" "pane-base-index" echo "$n6_out"
     fi
     tmux kill-session -t n6 2>/dev/null || true
@@ -1049,12 +1022,6 @@ STUB
   _t_check "B4: error has no bash line number" test "$b4_line_count" -eq 0
   rm -rf "$tmp/foo" || true
 
-  local b4_err2
-  b4_err2="$( (cd "$tmp" && "$BASH" "$0" init tmp-b4 2>/dev/null && \
-    "$BASH" "$0" create x --from 2>&1 || true) )"
-  _t_grep "B4: --from error mentions --from" "error:.*--from\|--from.*error:" echo "$b4_err2"
-  rm -rf "$tmp/tmp-b4" || true
-
   # ── Section: B6 — upgrade without --main produces no spurious warning ──────
 
   _section "B6 — upgrade: no spurious --main warning when not explicitly passed"
@@ -1101,7 +1068,7 @@ STUB
 
   _section "IDE3 — _resolve_ide: dies when idea absent"
   (
-    ide3_out="$(ZPROJ_EDITOR="" PATH=/usr/bin _resolve_ide 2>&1)" || ide3_out=""
+    ide3_out="$(ZPROJ_EDITOR="" PATH=/usr/bin _resolve_ide 2>&1)" || true
     _t_grep "IDE3: error message mentions idea" "idea" echo "$ide3_out"
   ) || true
 

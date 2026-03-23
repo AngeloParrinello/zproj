@@ -11,17 +11,10 @@
 
 **Parallel workspaces with bare git worktrees and tmux.**
 
-Manage parallel feature branches as first-class workspaces. Each branch gets
-its own directory and a tmux window with a 3-pane layout — coding agent,
-editor, and shell — all opened in the right place automatically. Worktrees,
-branches, and windows are created and torn down together as a unit.
-
-A built-in review workflow lets you annotate lines during a diff review and
-dispatch the collected notes to your coding agent for implementation.
-
-`zproj integrate` bootstraps a new machine in one command: installs `ck` and
-`cqs` code search tools, copies bundled skill files into your coding agent's
-global skills directory, and asks your agent to wire up your editor.
+Each feature branch gets its own directory and a tmux window with a 3-pane
+layout — coding agent, editor, and shell — all opened in the right place
+automatically. Worktrees, branches, and windows are created and torn down
+together as a unit.
 
 ## Requirements
 
@@ -31,41 +24,27 @@ global skills directory, and asks your agent to wire up your editor.
 | git | 2.5+ | Worktree support |
 | tmux | 3.0+ | Named pane support |
 
-One of the following coding agents is auto-discovered (or set `$CODING_AGENT`):  
+One of the following coding agents is auto-discovered (or set `$CODING_AGENT`):
 `opencode`, `claude`, `codex`, `amp`, `aider`, `goose`, `gemini`
 
-One of the following editors is auto-discovered (or set `$ZPROJ_EDITOR`):  
-`$EDITOR`, `nvim`, `vim`
-
-**Optional** (used by `zproj integrate` to install tools):
-
-| Tool | Purpose |
-|------|---------|
-| cargo | Install `ck` and `cqs` (preferred) |
-| npm | Install `ck` if cargo is absent |
+One of the following editors is auto-discovered (or set `$ZPROJ_EDITOR`):
+`idea` (IntelliJ IDEA)
 
 ## Installation
 
 ```bash
-# Clone the repo (required — zproj needs the bundled skills/ directory)
-git clone https://github.com/jdegoes/zproj ~/Documents/git/zproj
-
-# Symlink the script into your PATH
-ln -s ~/Documents/git/zproj/zproj ~/.local/bin/zproj
+# Download and make executable
+curl -o ~/.local/bin/zproj https://raw.githubusercontent.com/jdegoes/zproj/main/zproj
+chmod +x ~/.local/bin/zproj
 
 # Verify
 zproj --version
 ```
 
-> **Note:** Clone the repo rather than copying the script. The `skills/` and
-> `rules/` directories next to the script are needed for `zproj integrate` to
-> install skill files, rules, and tools. A standalone script copy will warn
-> gracefully but cannot install skills or rules.
-
 ## Quick start
 
 ```bash
-# Start a new project
+# New project from scratch
 zproj init my-project
 cd my-project
 zproj                        # opens tmux session with main worktree
@@ -110,14 +89,13 @@ three panes, all opened in the worktree directory:
 │  (pane 1)       │     (pane 2)     │
 │                 ├──────────────────┤
 │                 │                  │
-│                 │     shell        │
+│                 │  shell / ccm     │
 │                 │     (pane 3)     │
 └─────────────────┴──────────────────┘
 ```
 
-Panes are named after the tool they run (e.g. `opencode`, `nvim`, `shell`)
-so dispatch commands always reach the right pane regardless of which window
-is active.
+When the coding agent is `claude`, pane 3 runs `ccm --plan pro` instead of a
+plain shell.
 
 ### Tool resolution
 
@@ -129,115 +107,46 @@ zproj --diagnostics  # check the full environment for problems
 | Env var | Purpose |
 |---------|---------|
 | `CODING_AGENT` | Override coding agent (e.g. `export CODING_AGENT=claude`) |
-| `ZPROJ_EDITOR` | Override editor (e.g. `export ZPROJ_EDITOR=nvim`) |
-
-## Review workflow
-
-During development, annotate lines of interest while reviewing a diff. Notes
-accumulate in `.agents/plans/review-notes.md` inside the worktree. When ready,
-dispatch all notes to the coding agent in one step.
-
-```bash
-zproj review path      # print the notes file path
-zproj review view      # display accumulated notes
-zproj review dispatch  # send notes to coding agent, delete file
-zproj review clear     # discard notes
-```
-
-The dispatch command assembles a prompt from the notes, saves it to a temp
-file, and sends a one-line handoff message to the coding agent pane via tmux.
-The notes file is deleted after the temp file is safely written.
-
-## Machine integration
-
-`zproj integrate` bootstraps a new machine in one step:
-
-1. **Installs `ck`** — semantic code search (`cargo install ck-search`, or
-   `npm install -g @beaconbay/ck-search` if cargo is absent)
-2. **Installs `cqs`** — code intelligence and call graph analysis
-   (`cargo install cqs`)
-3. **Copies skill files** from `skills/*/SKILL.md` in the zproj repo into
-   your coding agent's global skills directory (e.g.
-   `~/.config/opencode/skills/` for OpenCode)
-4. **Installs instruction rules** from `rules/*.md` in the zproj repo into
-   the agent's global instructions file (e.g.
-   `~/.config/opencode/AGENTS.md` for OpenCode)
-5. **Asks your coding agent** to implement the review workflow in your editor
-   (add note / view / dispatch / clear), using the Neovim reference
-   implementation as a concrete example
-
-```bash
-zproj integrate                      # full bootstrap
-zproj integrate --skills-only        # install tools + skills, skip editor
-zproj integrate --plan               # dry run: show what would be done
-zproj integrate --skills-only --plan # dry run: tools + skills only
-```
-
-Skills directory per agent:
-
-| Agent | Global skills directory |
-|-------|------------------------|
-| opencode | `~/.config/opencode/skills/` |
-| claude | `~/.claude/skills/` |
-| codex | `~/.agents/skills/` |
-| amp | `~/.config/agents/skills/` |
-
-### Bundled skills
-
-The `skills/` directory in this repo contains skill files for:
-
-- **`ck`** — semantic code search; replaces grep/rg for source files
-- **`cqs`** — call graphs, impact analysis, refactoring safety, dead code
-
-Add a `skills/<toolname>/SKILL.md` to the repo and it will be installed
-automatically on the next `zproj integrate` run.
-
-### Bundled rules
-
-The `rules/` directory contains instruction rules installed into the agent's
-global instructions file. Each rule is a Markdown file with YAML frontmatter:
-
-```markdown
----
-marker: "stable substring for idempotent detection"
----
-The rule text appended to the instructions file.
-```
-
-The `marker:` field is a stable substring used to detect whether the rule is
-already present — so the rule is never duplicated even if the user edits the
-file. Add a `rules/<name>.md` to the repo and it will be installed
-automatically on the next `zproj integrate` run.
+| `ZPROJ_EDITOR` | Override editor (e.g. `export ZPROJ_EDITOR=goland`) |
 
 ## Command reference
 
 ```
-zproj                                       Open project session (from repo root)
-zproj <worktree-dir>                        Create (if needed) and launch
-zproj init <dir> [--main <branch>]          Init, convert, or upgrade to bare worktree repo
-zproj clone <git-url> [dir]                 Clone remote repo as bare worktree structure
-zproj create <worktree-dir> [--from ref]    Create a new worktree
-zproj delete <worktree-dir> [--force]       Remove worktree, branch, and window
-zproj launch <worktree-dir>                 Start or switch to tmux window
-zproj list [dir]                            Show worktrees with status
-zproj review <subcommand>                   Manage review notes (path/view/dispatch/clear)
-zproj integrate [--plan] [--skills-only]    Install tools, skills, and editor integration
-zproj --env                                 Show resolved editor and coding agent
-zproj --diagnostics                         Check environment for problems
-zproj --test                                Run the built-in test suite
+zproj                                  Open project session (from repo root)
+zproj <worktree-dir>                   Create (if needed) and launch
+zproj init <dir> [--main <branch>]     Init, convert, or upgrade to bare worktree repo
+zproj clone <git-url> [dir]            Clone remote repo as bare worktree structure
+zproj delete <worktree-dir> [--force]  Remove worktree, branch, and window
+zproj list [dir]                       Show worktrees with status
+zproj --env                            Show resolved editor and coding agent
+zproj --diagnostics                    Check environment for problems
+zproj --test                           Run the built-in test suite
 ```
 
 Run `zproj <command> --help` for details on any command.
+
+### `zproj init`
+
+Behavior depends on whether the directory already exists:
+
+- **Does not exist** — creates a new empty bare worktree repo
+- **Exists, no `.git`** — converts the directory (files moved into `<branch>/`)
+- **Exists, has `.git/`** — upgrades the repo in-place (history preserved)
+
+### `zproj <worktree-dir>`
+
+The primary command for daily use. From the project root:
+
+```bash
+zproj feature-auth   # creates worktree + branch + opens tmux window
+zproj feature-auth   # already exists → switches to the window
+```
 
 ## Self-test
 
 ```bash
 zproj --test
 ```
-
-257 tests covering init, clone, upgrade, worktree management, review workflow,
-tmux pane naming, diagnostics, integrate, skills installation, and tool
-detection. Requires tmux, git, and bash in PATH.
 
 ## License
 

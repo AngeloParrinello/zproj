@@ -4,14 +4,9 @@
 
 `zproj` is a single-file bash script (`zproj`) that manages parallel git
 worktrees with tmux sessions. Each worktree gets its own tmux window with a
-3-pane layout (coding agent, editor, shell). It also provides a review
-workflow for annotating diffs and dispatching notes to a coding agent.
+3-pane layout (coding agent, editor, shell/ccm).
 
 The repository also contains:
-- `skills/` — bundled skill files installed by `zproj integrate` into the
-  coding agent's global skills directory
-- `rules/` — rule files installed by `zproj integrate` into the agent's
-  global instructions file (e.g. `~/.config/opencode/AGENTS.md`)
 - `README.md` — user-facing documentation
 
 ## Commands
@@ -41,15 +36,10 @@ script — read and edit it directly. Do not create additional source files.
 `zproj` is organized into these layers, top to bottom:
 
 1. **Constants and helpers** — `VERSION`, color vars, `die`/`warn`/`info`, git and tmux utilities
-2. **Tool/editor/agent resolution** — `_resolve_editor`, `_resolve_ai`, `_agent_skills_dir`, etc.
-3. **Subcommands** — `cmd_<name>` functions, one per subcommand (`init`, `clone`, `create`, `delete`, `launch`, `list`, `review`, `integrate`, `env`, `diagnostics`)
-4. **Usage functions** — `usage_<name>`, one per subcommand
+2. **Tool/editor/agent resolution** — `_resolve_ide`, `_resolve_ai`, `_is_claude_agent`, etc.
+3. **Subcommands** — `cmd_<name>` functions, one per user-facing command (`init`, `clone`, `delete`, `list`) plus internal helpers (`cmd_create`, `cmd_launch`, `cmd_open`, `cmd_default`)
+4. **Usage functions** — `usage_<name>`, one per user-facing subcommand
 5. **Self-test** — `cmd_test()`, containing all tests
-
-Key areas most likely to need changes:
-- `cmd_review` — review workflow (`path`, `view`, `dispatch`, `clear`)
-- `_integrate_build_prompt` — generates the editor integration prompt sent to the agent; contains the bundled reference Neovim+diffview.nvim implementation as a literal heredoc
-- `cmd_test` — all tests; sections named by prefix (e.g. `OL1`, `SK5`, `IN2`)
 
 ## Code conventions
 
@@ -65,13 +55,3 @@ Every new feature or behaviour change must be accompanied by tests in
 `cmd_test()` — no exceptions. Add tests in a new or existing `_section` block
 using the appropriate prefix. Choose the next available number within the
 prefix (e.g. if `OL7` exists, add `OL8`).
-
-## Editor integration sync
-
-The bundled Neovim reference implementation lives as a literal heredoc inside
-`_integrate_build_prompt` in `zproj`. It is the source of truth for what
-`zproj integrate` hands to a new user's coding agent.
-
-If the review workflow changes (e.g. new subcommands, changed note format,
-different key bindings), the heredoc must be updated to reflect the new
-workflow so that new users get correct integration instructions.
