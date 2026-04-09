@@ -71,13 +71,42 @@ _hint_next_steps() {
   echo -e "  ${DIM}$SCRIPT_NAME my-feature${RESET}  ${DIM}# create new worktree + window${RESET}"
 }
 
+# Open a new native Ghostty window that attaches to the given tmux session.
+# Used when we are already inside a different tmux session and must not steal
+# the current terminal by switching the client away.
+#
+# Detection: GHOSTTY_BIN_DIR is injected by Ghostty into the shell before
+# tmux starts and survives into tmux panes.  TERM_PROGRAM cannot be used here
+# because tmux overwrites it to "tmux" inside panes.
+_open_session_in_new_window() {
+  local session="$1"
+  if [[ -n "${GHOSTTY_BIN_DIR:-}" ]] && command -v open &>/dev/null; then
+    # open -na spawns a fresh Ghostty instance; --args forwards everything
+    # after it to Ghostty.  Pass -e followed by each token separately so
+    # Ghostty receives the full "tmux attach-session -t <name>" command.
+    open -na Ghostty.app --args -e tmux attach-session -t "$session" &
+    disown
+    return 0
+  fi
+  # Generic fallback: switch the current client (steals the terminal).
+  tmux switch-client -t "$session"
+}
+
 # Switch to or attach a tmux session, respecting ZPROJ_TEST_NO_ATTACH.
 # $1 = session name
 _tmux_attach_or_switch() {
   local session="$1"
   if [[ -z "${ZPROJ_TEST_NO_ATTACH:-}" ]]; then
     if [[ -n "${TMUX:-}" ]]; then
-      tmux switch-client -t "$session"
+      local current_session
+      current_session="$(tmux display-message -p '#S' 2>/dev/null || echo "")"
+      if [[ "$current_session" != "$session" ]]; then
+        # We are inside a different tmux session: open the project session in
+        # a new terminal window so the current session is not abandoned.
+        _open_session_in_new_window "$session"
+      fi
+      # Same session: select-window (called just before) already focused the
+      # right window — nothing more to do for the client.
     else
       tmux attach -t "$session"
     fi
@@ -231,6 +260,25 @@ _plural() { [[ "${1:-0}" == "1" ]] && echo "" || echo "s"; }
 # Usage: session_name="$(_tmux_session_name "$dir")"
 _tmux_session_name() { tr '.:'  '--' <<< "$1"; }
 
+# Resolve the tmux session name to use for a given project directory.
+# When already inside tmux, reuse the current client's session so new windows
+# join the user's existing workspace instead of creating a sibling session
+# that would require switch-client (which visually "cancels" their other
+# windows).  When outside tmux, fall back to the per-project session name.
+# $1 = project parent directory
+_resolve_session_name() {
+  local parent_dir="$1"
+  if [[ -n "${TMUX:-}" ]]; then
+    local current
+    current="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    if [[ -n "$current" ]]; then
+      echo "$current"
+      return 0
+    fi
+  fi
+  _tmux_session_name "$(basename "$parent_dir")"
+}
+
 _resolve_ide() {
   local candidates=()
   [[ -n "${ZPROJ_EDITOR:-}" ]] && candidates+=("$ZPROJ_EDITOR")
@@ -373,7 +421,7 @@ resolve_project_dir() {
     exit 1
   fi
 
-  SESSION_NAME="$(_tmux_session_name "$(basename "$PARENT_DIR")")"
+  SESSION_NAME="$(_resolve_session_name "$PARENT_DIR")"
   WINDOW_NAME="$WORKTREE_NAME"
 }
 
@@ -1176,6 +1224,20 @@ cmd_launch() {
     tmux select-pane -t "$_p1"
   }
 
+  # If we're hosting inside an existing tmux session whose name is still the
+  # default numeric placeholder (tmux assigns 0, 1, …), rename it to the
+  # project so the status bar reflects the active project.  Custom names are
+  # left alone so multiple projects sharing one session don't thrash.
+  if [[ -n "${TMUX:-}" && "$SESSION_NAME" =~ ^[0-9]+$ ]]; then
+    local _project_session
+    _project_session="$(_tmux_session_name "$(basename "$PARENT_DIR")")"
+    if [[ "$_project_session" != "$SESSION_NAME" ]] &&
+       ! tmux has-session -t "$_project_session" 2>/dev/null; then
+      tmux rename-session -t "$SESSION_NAME" "$_project_session" 2>/dev/null \
+        && SESSION_NAME="$_project_session"
+    fi
+  fi
+
   if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
 
     if tmux list-windows -t "$SESSION_NAME" -F '#{window_name}' 2>/dev/null | grep -qx "$WINDOW_NAME"; then
@@ -1237,8 +1299,9 @@ cmd_list() {
 
   [[ ! -d "$root/$BARE_DIR" ]] && die "No bare repo found. Run from a worktree root or specify a path."
 
-  local root_name
-  root_name="$(_tmux_session_name "$(basename "$root")")"
+  local root_name display_name
+  root_name="$(_resolve_session_name "$root")"
+  display_name="$(_tmux_session_name "$(basename "$root")")"
 
   # Get list of tmux windows for this session (if session exists)
   local -a tmux_windows=()
@@ -1249,7 +1312,7 @@ cmd_list() {
   fi
 
   echo ""
-  echo -e "  ${BOLD}${root_name}${RESET} worktrees:"
+  echo -e "  ${BOLD}${display_name}${RESET} worktrees:"
   echo ""
 
   # Column widths
@@ -1372,7 +1435,7 @@ cmd_open() {
   check_session_deps
 
   local session_name
-  session_name="$(_tmux_session_name "$(basename "$root")")"
+  session_name="$(_resolve_session_name "$root")"
 
   # Session already exists — just attach/switch
   if tmux has-session -t "$session_name" 2>/dev/null; then

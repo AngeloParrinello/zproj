@@ -79,8 +79,19 @@ multiple branches open simultaneously without stashing or switching.
 
 ### Tmux layout
 
-One tmux **session** per project, one **window** per worktree. Each window has
-three panes, all opened in the worktree directory:
+One **window** per worktree, each with the same three-pane layout. The
+hosting session is chosen based on whether you're already inside tmux:
+
+- **Outside tmux** — a dedicated session is created per project (named
+  after the project directory) and you're attached to it.
+- **Inside tmux** — the new window is added to your *current* session, so
+  existing windows are preserved and nothing is stolen via `switch-client`.
+  If the current session still has tmux's default numeric name (`0`, `1`,
+  …), it is renamed to the project on first launch so the status bar
+  reflects the active project. Custom session names are left alone, which
+  means multiple projects can share one session without name thrashing.
+
+Each window has three panes, all opened in the worktree directory:
 
 ```
 ┌─────────────────┬──────────────────┐
@@ -141,6 +152,10 @@ The primary command for daily use. From the project root:
 zproj feature-auth   # creates worktree + branch + opens tmux window
 zproj feature-auth   # already exists → switches to the window
 ```
+
+When run from inside an existing tmux session, the new window is appended
+to that session instead of spawning a sibling session — so your other
+windows stay visible. See [Tmux layout](#tmux-layout) for the full rules.
 
 ## Self-test
 
