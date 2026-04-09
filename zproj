@@ -1136,6 +1136,7 @@ cmd_delete() {
       rm -rf "$PROJECT_DIR"
   else
     (cd "$PARENT_DIR" && git worktree remove "$WORKTREE_NAME")
+    rm -r "$PROJECT_DIR" 2>/dev/null || true
   fi
 
   # Prune stale worktree metadata (must happen before branch delete)
